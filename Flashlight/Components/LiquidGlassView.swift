@@ -67,7 +67,7 @@ struct LiquidGlassCard<Content: View>: View {
 // MARK: - Liquid Glass Button
 
 struct LiquidGlassButton: View {
-    let title: String
+    let title: String?
     let icon: String?
     var isActive: Bool = false
     let action: () -> Void
@@ -79,11 +79,13 @@ struct LiquidGlassButton: View {
                     Image(systemName: icon)
                         .font(.system(size: 16, weight: .semibold))
                 }
-                Text(title)
-                    .font(.system(size: 15, weight: .semibold))
+                if let title = title {
+                    Text(title)
+                        .font(.system(size: 15, weight: .semibold))
+                }
             }
             .foregroundStyle(isActive ? .black : .white)
-            .padding(.horizontal, 20)
+            .padding(.horizontal, title == nil ? 14 : 20)
             .padding(.vertical, 12)
             .background(
                 ZStack {

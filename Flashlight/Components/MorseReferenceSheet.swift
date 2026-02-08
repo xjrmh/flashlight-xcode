@@ -44,8 +44,8 @@ struct MorseReferenceSheet: View {
 
                         LiquidGlassCard(cornerRadius: 16, padding: 16) {
                             VStack(alignment: .leading, spacing: 12) {
-                                timingRow("Dot", duration: "1 unit", visual: dotVisual)
-                                timingRow("Dash", duration: "3 units", visual: dashVisual)
+                                timingRow("Dot", duration: "1 unit", visual: AnyView(dotVisual))
+                                timingRow("Dash", duration: "3 units", visual: AnyView(dashVisual))
                                 Divider().background(Color.white.opacity(0.1))
                                 timingRow("Element gap", duration: "1 unit", visual: nil)
                                 timingRow("Letter gap", duration: "3 units", visual: nil)
@@ -118,7 +118,7 @@ struct MorseReferenceSheet: View {
             .frame(width: 24, height: 12)
     }
 
-    private func timingRow(_ label: String, duration: String, visual: (some View)?) -> some View {
+    private func timingRow(_ label: String, duration: String, visual: AnyView?) -> some View {
         HStack {
             Text(label)
                 .font(.system(size: 14, weight: .medium))
@@ -127,7 +127,7 @@ struct MorseReferenceSheet: View {
             Spacer()
 
             if let visual = visual {
-                AnyView(visual)
+                visual
                     .padding(.trailing, 8)
             }
 

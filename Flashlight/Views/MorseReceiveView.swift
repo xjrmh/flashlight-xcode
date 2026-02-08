@@ -75,7 +75,7 @@ struct MorseReceiveView: View {
 
             HStack(spacing: 8) {
                 LiquidGlassButton(
-                    title: "Settings",
+                    title: nil,
                     icon: "slider.horizontal.3",
                     isActive: showSettings
                 ) {
@@ -85,7 +85,7 @@ struct MorseReceiveView: View {
                 }
 
                 LiquidGlassButton(
-                    title: "History",
+                    title: nil,
                     icon: "clock.arrow.circlepath",
                     isActive: showHistory
                 ) {
@@ -100,52 +100,55 @@ struct MorseReceiveView: View {
     // MARK: - Camera Preview
 
     private var cameraPreviewSection: some View {
-        LiquidGlassCard(cornerRadius: 20, padding: 0) {
-            ZStack {
-                // Camera feed
-                CameraPreviewView(detector: cameraDetector)
-                    .frame(height: 240)
-                    .clipShape(RoundedRectangle(cornerRadius: 20))
+        ZStack {
+            // Camera feed
+            CameraPreviewView(detector: cameraDetector)
+                .frame(height: 240)
+                .clipShape(RoundedRectangle(cornerRadius: 20))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 20)
+                        .strokeBorder(Color.white.opacity(0.2), lineWidth: 0.5)
+                )
 
-                // ROI overlay
-                VStack {
+            // ROI overlay
+            VStack {
+                Spacer()
+                HStack {
                     Spacer()
-                    HStack {
-                        Spacer()
-                        RoundedRectangle(cornerRadius: 8)
-                            .strokeBorder(
-                                morseEngine.lightDetected ? Color.green : Color.white.opacity(0.4),
-                                style: StrokeStyle(lineWidth: 2, dash: [8, 4])
-                            )
-                            .frame(width: 80, height: 80)
-                            .background(
-                                RoundedRectangle(cornerRadius: 8)
-                                    .fill(morseEngine.lightDetected ? Color.green.opacity(0.1) : Color.clear)
-                            )
-                        Spacer()
-                    }
+                    RoundedRectangle(cornerRadius: 8)
+                        .strokeBorder(
+                            morseEngine.lightDetected ? Color.green : Color.white.opacity(0.4),
+                            style: StrokeStyle(lineWidth: 2, dash: [8, 4])
+                        )
+                        .frame(width: 80, height: 80)
+                        .background(
+                            RoundedRectangle(cornerRadius: 8)
+                                .fill(morseEngine.lightDetected ? Color.green.opacity(0.1) : Color.clear)
+                        )
                     Spacer()
                 }
+                Spacer()
+            }
 
-                // Status overlay
-                if !cameraDetector.isRunning && !morseEngine.isReceiving {
-                    ZStack {
-                        RoundedRectangle(cornerRadius: 20)
-                            .fill(.black.opacity(0.7))
+            // Status overlay
+            if !cameraDetector.isRunning && !morseEngine.isReceiving {
+                ZStack {
+                    RoundedRectangle(cornerRadius: 20)
+                        .fill(.black.opacity(0.7))
 
-                        VStack(spacing: 12) {
-                            Image(systemName: "camera.fill")
-                                .font(.system(size: 36))
-                                .foregroundStyle(.white.opacity(0.4))
+                    VStack(spacing: 12) {
+                        Image(systemName: "camera.fill")
+                            .font(.system(size: 36))
+                            .foregroundStyle(.white.opacity(0.4))
 
-                            Text("Tap Start to begin detecting")
-                                .font(.system(size: 14))
-                                .foregroundStyle(.white.opacity(0.4))
-                        }
+                        Text("Tap Start to begin detecting")
+                            .font(.system(size: 14))
+                            .foregroundStyle(.white.opacity(0.4))
                     }
                 }
             }
         }
+        .frame(height: 240)
     }
 
     // MARK: - Signal Indicator
@@ -275,7 +278,10 @@ struct MorseReceiveView: View {
                         .foregroundStyle(.white)
                         .textSelection(.enabled)
                 }
+                
+                Spacer(minLength: 0)
             }
+            .frame(minHeight: 120)
         }
     }
 

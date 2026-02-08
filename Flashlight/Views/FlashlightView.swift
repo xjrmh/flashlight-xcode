@@ -15,16 +15,21 @@ struct FlashlightView: View {
                 let isCompact = geometry.size.width < 600
 
                 if isCompact {
-                    // iPhone layout — vertical
-                    VStack(spacing: 32) {
-                        Spacer()
+                    // iPhone layout — vertical with fixed control panel
+                    let controlPanelHeight: CGFloat = 260
+                    let bottomPadding: CGFloat = 20
+                    let availableHeight = geometry.size.height - controlPanelHeight - bottomPadding - geometry.safeAreaInsets.bottom
+                    
+                    VStack(spacing: 0) {
+                        // Torch visual centered in remaining space
                         torchVisual
-                        Spacer()
+                            .frame(height: availableHeight)
+                        
+                        // Fixed control panel at bottom
                         controlPanel
-                        Spacer()
-                            .frame(height: 20)
+                            .padding(.horizontal, 24)
+                            .padding(.bottom, bottomPadding)
                     }
-                    .padding(.horizontal, 24)
                 } else {
                     // iPad layout — horizontal split
                     HStack(spacing: 40) {
