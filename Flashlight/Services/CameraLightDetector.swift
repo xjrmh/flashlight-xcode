@@ -1,77 +1,152 @@
 import AVFoundation
 import SwiftUI
 import CoreImage
+import Accelerate
 
-/// Light source analysis result
+/// Detailed light analysis for debugging and visualization
 struct LightAnalysis {
-    let averageBrightness: Double  // 0-1 average luminance
-    let peakBrightness: Double     // 0-1 max luminance in ROI
-    let saturationRatio: Double    // Ratio of near-white pixels (likely light source)
-    let contrast: Double           // Difference between brightest and average
+    let peakBrightness: Double      // 0-1 max luminance in ROI
+    let centerBrightness: Double    // 0-1 brightness at center cluster
+    let edgeBrightness: Double      // 0-1 average brightness at edges
+    let signalToNoise: Double       // Ratio of center to edge brightness
+    let timestamp: CFAbsoluteTime
     
-    /// Combined score that favors actual light sources over reflective surfaces
+    /// Score optimized for detecting a point light source
     var lightSourceScore: Double {
-        // A true light source has:
-        // - High peak brightness (saturated/blown out pixels)
-        // - High saturation ratio (many very bright pixels)
-        // - High contrast (bright center, darker edges)
+        // A flashlight pointed at camera will have:
+        // - Very high center brightness (often saturated)
+        // - Lower edge brightness
+        // - High signal-to-noise ratio
+        let centerWeight = 0.5
+        let snrWeight = 0.3
+        let peakWeight = 0.2
         
-        let peakWeight = 0.3
-        let saturationWeight = 0.4
-        let contrastWeight = 0.3
-        
-        return (peakBrightness * peakWeight) +
-               (saturationRatio * saturationWeight) +
-               (contrast * contrastWeight)
+        return (centerBrightness * centerWeight) +
+               (min(1.0, signalToNoise / 3.0) * snrWeight) +
+               (peakBrightness * peakWeight)
     }
 }
 
-/// Detects light/flash patterns from the camera feed for morse code decoding
+/// High-performance light detector optimized for morse code reception
 class CameraLightDetector: NSObject, ObservableObject {
+    // MARK: - Published State
     @Published var isRunning = false
     @Published var currentBrightness: Double = 0.0
     @Published var previewLayer: AVCaptureVideoPreviewLayer?
     @Published var lastAnalysis: LightAnalysis?
+    @Published var permissionStatus: AVAuthorizationStatus = .notDetermined
+    @Published var isCalibrating = true
+    @Published var signalQuality: SignalQuality = .none
+    
+    enum SignalQuality: String {
+        case none = "No Signal"
+        case weak = "Weak"
+        case good = "Good"
+        case strong = "Strong"
+    }
 
+    // MARK: - Camera
     private var captureSession: AVCaptureSession?
     private var videoOutput: AVCaptureVideoDataOutput?
+    private var camera: AVCaptureDevice?
     private let processingQueue = DispatchQueue(label: "com.flashlight.camera", qos: .userInteractive)
-
-    /// Region of interest for light detection (center portion of frame)
-    var roiSize: CGFloat = 0.3
     
-    /// Threshold for considering a pixel "saturated" (likely from a light source)
-    private let saturationThreshold: Double = 0.85
-
-    var onBrightnessUpdate: ((Double) -> Void)?
+    // MARK: - Calibration
+    private var calibrationFrameCount = 0
+    private let calibrationFramesNeeded = 20
+    private var baselineLevel: Double = 0
+    private var baselineSamples: [Double] = []
+    
+    // MARK: - Signal Processing
+    private var signalHistory: [Double] = []
+    private let signalHistorySize = 8
+    private var lastFrameTime: CFAbsoluteTime = 0
+    
+    /// Region of interest for light detection (center portion of frame)
+    var roiSize: CGFloat = 0.25
+    
+    /// Callback for brightness updates with high-precision timestamp
+    var onBrightnessUpdate: ((Double, CFAbsoluteTime) -> Void)?
 
     override init() {
         super.init()
+        permissionStatus = AVCaptureDevice.authorizationStatus(for: .video)
+    }
+
+    func checkPermission(completion: @escaping (Bool) -> Void) {
+        switch AVCaptureDevice.authorizationStatus(for: .video) {
+        case .authorized:
+            DispatchQueue.main.async {
+                self.permissionStatus = .authorized
+                completion(true)
+            }
+        case .notDetermined:
+            AVCaptureDevice.requestAccess(for: .video) { granted in
+                DispatchQueue.main.async {
+                    self.permissionStatus = granted ? .authorized : .denied
+                    completion(granted)
+                }
+            }
+        case .denied, .restricted:
+            DispatchQueue.main.async {
+                self.permissionStatus = AVCaptureDevice.authorizationStatus(for: .video)
+                completion(false)
+            }
+        @unknown default:
+            DispatchQueue.main.async {
+                completion(false)
+            }
+        }
     }
 
     func setupCamera() {
         let session = AVCaptureSession()
-        session.sessionPreset = .medium
+        // Use higher frame rate for better timing resolution
+        session.sessionPreset = .high
 
-        guard let camera = AVCaptureDevice.default(.builtInWideAngleCamera, for: .video, position: .back) else {
+        guard let cameraDevice = AVCaptureDevice.default(.builtInWideAngleCamera, for: .video, position: .back) else {
             print("No back camera available")
             return
         }
 
-        do {
-            // Configure camera for light detection
-            try camera.lockForConfiguration()
-            // Disable auto-exposure to get consistent readings
-            if camera.isExposureModeSupported(.locked) {
-                camera.exposureMode = .locked
-            }
-            // Disable auto white balance
-            if camera.isWhiteBalanceModeSupported(.locked) {
-                camera.whiteBalanceMode = .locked
-            }
-            camera.unlockForConfiguration()
+        self.camera = cameraDevice
 
-            let input = try AVCaptureDeviceInput(device: camera)
+        do {
+            try cameraDevice.lockForConfiguration()
+            
+            // Configure for maximum frame rate
+            let desiredFrameRate: Double = 60
+            var bestFormat: AVCaptureDevice.Format?
+            var bestFrameRateRange: AVFrameRateRange?
+            
+            for format in cameraDevice.formats {
+                for range in format.videoSupportedFrameRateRanges {
+                    if range.maxFrameRate >= desiredFrameRate {
+                        if bestFrameRateRange == nil || range.maxFrameRate > bestFrameRateRange!.maxFrameRate {
+                            bestFormat = format
+                            bestFrameRateRange = range
+                        }
+                    }
+                }
+            }
+            
+            if let format = bestFormat, let range = bestFrameRateRange {
+                cameraDevice.activeFormat = format
+                cameraDevice.activeVideoMinFrameDuration = CMTime(value: 1, timescale: CMTimeScale(range.maxFrameRate))
+                cameraDevice.activeVideoMaxFrameDuration = CMTime(value: 1, timescale: CMTimeScale(range.maxFrameRate))
+            }
+            
+            // Start with auto-exposure for calibration
+            if cameraDevice.isExposureModeSupported(.continuousAutoExposure) {
+                cameraDevice.exposureMode = .continuousAutoExposure
+            }
+            if cameraDevice.isWhiteBalanceModeSupported(.continuousAutoWhiteBalance) {
+                cameraDevice.whiteBalanceMode = .continuousAutoWhiteBalance
+            }
+            
+            cameraDevice.unlockForConfiguration()
+
+            let input = try AVCaptureDeviceInput(device: cameraDevice)
             if session.canAddInput(input) {
                 session.addInput(input)
             }
@@ -102,8 +177,37 @@ class CameraLightDetector: NSObject, ObservableObject {
         }
     }
 
+    private func lockExposureSettings() {
+        guard let camera = camera else { return }
+        do {
+            try camera.lockForConfiguration()
+            
+            // Lock current exposure
+            if camera.isExposureModeSupported(.locked) {
+                camera.exposureMode = .locked
+            }
+            // Keep auto white balance - it helps with light detection
+            if camera.isWhiteBalanceModeSupported(.continuousAutoWhiteBalance) {
+                camera.whiteBalanceMode = .continuousAutoWhiteBalance
+            }
+            
+            camera.unlockForConfiguration()
+        } catch {
+            print("Failed to lock camera settings: \(error.localizedDescription)")
+        }
+    }
+
     func start() {
         guard let session = captureSession, !session.isRunning else { return }
+        
+        // Reset state
+        isCalibrating = true
+        calibrationFrameCount = 0
+        baselineSamples = []
+        baselineLevel = 0
+        signalHistory = []
+        lastFrameTime = CFAbsoluteTimeGetCurrent()
+        
         processingQueue.async {
             session.startRunning()
             DispatchQueue.main.async {
@@ -118,14 +222,35 @@ class CameraLightDetector: NSObject, ObservableObject {
             session.stopRunning()
             DispatchQueue.main.async {
                 self.isRunning = false
+                self.isCalibrating = true
             }
         }
     }
+    
+    func recalibrate() {
+        isCalibrating = true
+        calibrationFrameCount = 0
+        baselineSamples = []
+        
+        // Unlock exposure to recalibrate
+        guard let camera = camera else { return }
+        do {
+            try camera.lockForConfiguration()
+            if camera.isExposureModeSupported(.continuousAutoExposure) {
+                camera.exposureMode = .continuousAutoExposure
+            }
+            camera.unlockForConfiguration()
+        } catch {
+            print("Failed to unlock camera for recalibration: \(error.localizedDescription)")
+        }
+    }
 
-    /// Analyze the center region for light source characteristics
+    /// Analyze the center region for light source with optimized algorithm
     private func analyzeForLightSource(from sampleBuffer: CMSampleBuffer) -> LightAnalysis {
+        let timestamp = CFAbsoluteTimeGetCurrent()
+        
         guard let pixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer) else {
-            return LightAnalysis(averageBrightness: 0, peakBrightness: 0, saturationRatio: 0, contrast: 0)
+            return LightAnalysis(peakBrightness: 0, centerBrightness: 0, edgeBrightness: 0, signalToNoise: 0, timestamp: timestamp)
         }
 
         CVPixelBufferLockBaseAddress(pixelBuffer, .readOnly)
@@ -136,60 +261,104 @@ class CameraLightDetector: NSObject, ObservableObject {
         let bytesPerRow = CVPixelBufferGetBytesPerRow(pixelBuffer)
 
         guard let baseAddress = CVPixelBufferGetBaseAddress(pixelBuffer) else {
-            return LightAnalysis(averageBrightness: 0, peakBrightness: 0, saturationRatio: 0, contrast: 0)
+            return LightAnalysis(peakBrightness: 0, centerBrightness: 0, edgeBrightness: 0, signalToNoise: 0, timestamp: timestamp)
         }
         let buffer = baseAddress.assumingMemoryBound(to: UInt8.self)
 
-        // Calculate ROI (center square region to match overlay)
+        // Calculate ROI dimensions
         let roiSide = Int(Double(min(width, height)) * Double(roiSize))
-        let roiWidth = roiSide
-        let roiHeight = roiSide
-        let startX = (width - roiWidth) / 2
-        let startY = (height - roiHeight) / 2
+        let centerX = width / 2
+        let centerY = height / 2
+        
+        // Center region (inner 40% of ROI) - where the light source should be
+        let innerSize = roiSide * 2 / 5
+        let innerStartX = centerX - innerSize / 2
+        let innerStartY = centerY - innerSize / 2
+        
+        // Edge region (outer ring of ROI)
+        let outerStartX = centerX - roiSide / 2
+        let outerStartY = centerY - roiSide / 2
 
-        var totalBrightness: Double = 0
-        var peakBrightness: Double = 0
-        var saturatedPixels: Double = 0
-        var pixelCount: Double = 0
+        var centerTotal: Double = 0
+        var centerCount: Double = 0
+        var centerPeak: Double = 0
+        
+        var edgeTotal: Double = 0
+        var edgeCount: Double = 0
 
-        // Sample every 2nd pixel for better sensitivity
-        let step = 2
-        for y in stride(from: startY, to: startY + roiHeight, by: step) {
-            for x in stride(from: startX, to: startX + roiWidth, by: step) {
+        // Sample center region densely
+        let centerStep = 1
+        for y in stride(from: innerStartY, to: innerStartY + innerSize, by: centerStep) {
+            for x in stride(from: innerStartX, to: innerStartX + innerSize, by: centerStep) {
+                guard y >= 0 && y < height && x >= 0 && x < width else { continue }
                 let offset = y * bytesPerRow + x * 4
                 let b = Double(buffer[offset])
                 let g = Double(buffer[offset + 1])
                 let r = Double(buffer[offset + 2])
                 
-                // Perceived luminance formula
-                let luminance = (0.299 * r + 0.587 * g + 0.114 * b) / 255.0
+                // Fast luminance approximation
+                let luminance = (r * 0.299 + g * 0.587 + b * 0.114) / 255.0
                 
-                totalBrightness += luminance
-                peakBrightness = max(peakBrightness, luminance)
+                centerTotal += luminance
+                centerPeak = max(centerPeak, luminance)
+                centerCount += 1
+            }
+        }
+        
+        // Sample edge region (only the outer ring, skip center)
+        let edgeStep = 2
+        for y in stride(from: outerStartY, to: outerStartY + roiSide, by: edgeStep) {
+            for x in stride(from: outerStartX, to: outerStartX + roiSide, by: edgeStep) {
+                guard y >= 0 && y < height && x >= 0 && x < width else { continue }
                 
-                // Count saturated/near-white pixels (indicates actual light source)
-                if luminance > saturationThreshold {
-                    saturatedPixels += 1
+                // Skip if inside center region
+                if x >= innerStartX && x < innerStartX + innerSize &&
+                   y >= innerStartY && y < innerStartY + innerSize {
+                    continue
                 }
                 
-                pixelCount += 1
+                let offset = y * bytesPerRow + x * 4
+                let b = Double(buffer[offset])
+                let g = Double(buffer[offset + 1])
+                let r = Double(buffer[offset + 2])
+                
+                let luminance = (r * 0.299 + g * 0.587 + b * 0.114) / 255.0
+                
+                edgeTotal += luminance
+                edgeCount += 1
             }
         }
 
-        guard pixelCount > 0 else {
-            return LightAnalysis(averageBrightness: 0, peakBrightness: 0, saturationRatio: 0, contrast: 0)
-        }
-        
-        let avgBrightness = totalBrightness / pixelCount
-        let saturationRatio = saturatedPixels / pixelCount
-        let contrast = peakBrightness - avgBrightness
+        let centerBrightness = centerCount > 0 ? centerTotal / centerCount : 0
+        let edgeBrightness = edgeCount > 0 ? edgeTotal / edgeCount : 0
+        let snr = edgeBrightness > 0.01 ? centerBrightness / edgeBrightness : centerBrightness * 10
         
         return LightAnalysis(
-            averageBrightness: avgBrightness,
-            peakBrightness: peakBrightness,
-            saturationRatio: saturationRatio,
-            contrast: contrast
+            peakBrightness: centerPeak,
+            centerBrightness: centerBrightness,
+            edgeBrightness: edgeBrightness,
+            signalToNoise: snr,
+            timestamp: timestamp
         )
+    }
+    
+    private func updateSignalQuality(_ score: Double) {
+        let quality: SignalQuality
+        if score < 0.1 {
+            quality = .none
+        } else if score < 0.3 {
+            quality = .weak
+        } else if score < 0.6 {
+            quality = .good
+        } else {
+            quality = .strong
+        }
+        
+        if quality != signalQuality {
+            DispatchQueue.main.async {
+                self.signalQuality = quality
+            }
+        }
     }
 }
 
@@ -202,16 +371,61 @@ extension CameraLightDetector: AVCaptureVideoDataOutputSampleBufferDelegate {
         from connection: AVCaptureConnection
     ) {
         let analysis = analyzeForLightSource(from: sampleBuffer)
+        let score = analysis.lightSourceScore
         
-        // Use a combined signal strength that also considers overall brightness.
-        let lightScore = analysis.lightSourceScore
-        let contrastWeighted = analysis.peakBrightness * 0.6 + analysis.contrast * 0.4
-        let signalStrength = max(lightScore, contrastWeighted, analysis.peakBrightness, analysis.averageBrightness)
-
-        DispatchQueue.main.async { [weak self] in
-            self?.currentBrightness = signalStrength
-            self?.lastAnalysis = analysis
-            self?.onBrightnessUpdate?(signalStrength)
+        // Calibration phase: collect baseline samples
+        if isCalibrating {
+            calibrationFrameCount += 1
+            baselineSamples.append(score)
+            
+            if calibrationFrameCount >= calibrationFramesNeeded {
+                // Calculate baseline as median of samples (robust to outliers)
+                let sorted = baselineSamples.sorted()
+                baselineLevel = sorted[sorted.count / 2]
+                
+                DispatchQueue.main.async {
+                    self.isCalibrating = false
+                }
+                lockExposureSettings()
+            }
         }
+        
+        // Apply temporal smoothing with fast attack, slow decay
+        let smoothedScore: Double
+        if signalHistory.isEmpty {
+            smoothedScore = score
+        } else {
+            let lastValue = signalHistory.last ?? score
+            // Fast attack (0.7), slow decay (0.3) for responsive light detection
+            let alpha = score > lastValue ? 0.7 : 0.3
+            smoothedScore = lastValue * (1 - alpha) + score * alpha
+        }
+        
+        // Update history
+        signalHistory.append(smoothedScore)
+        if signalHistory.count > signalHistorySize {
+            signalHistory.removeFirst()
+        }
+        
+        // Normalize signal relative to baseline
+        let normalizedSignal: Double
+        if baselineLevel > 0.01 {
+            // Signal strength relative to baseline
+            normalizedSignal = max(0, (smoothedScore - baselineLevel * 0.8) / (1.0 - baselineLevel * 0.8))
+        } else {
+            normalizedSignal = smoothedScore
+        }
+        
+        updateSignalQuality(normalizedSignal)
+        
+        DispatchQueue.main.async { [weak self] in
+            self?.currentBrightness = normalizedSignal
+            self?.lastAnalysis = analysis
+        }
+        
+        // Call update with high-precision timestamp
+        onBrightnessUpdate?(normalizedSignal, analysis.timestamp)
+        
+        lastFrameTime = analysis.timestamp
     }
 }

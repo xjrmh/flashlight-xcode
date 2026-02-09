@@ -30,16 +30,37 @@ class MorseCodeEngine: ObservableObject {
     @Published var receivedSignals: [MorseSignal] = []
     @Published var dedicatedSourceMode: Bool = false
     @Published var preambleDetected: Bool = false
-    private var rawDetectedMorse: String = "" // Buffer before preamble detection
-    private var ambientLevel: Double = 0
-    private var smoothedLevel: Double = 0
-    private var emaMean: Double = 0
-    private var emaVariance: Double = 0
-    private var consecutiveOnSamples: Int = 0
-    private var consecutiveOffSamples: Int = 0
-    private var estimatedDotDuration: TimeInterval = 0
-    private var recentOnDurations: [TimeInterval] = []
-
+    @Published var detectorState: DetectorState = .idle
+    
+    // MARK: - Detection State Machine
+    enum DetectorState: Equatable {
+        case idle
+        case waitingForSignal
+        case inPulse(startTime: CFAbsoluteTime)
+        case inGap(startTime: CFAbsoluteTime, lastPulseDuration: TimeInterval)
+    }
+    
+    // MARK: - Adaptive Threshold
+    private var adaptiveThreshold: Double = 0.3
+    private var noiseFloor: Double = 0.05
+    private var signalPeak: Double = 0.5
+    private var thresholdHistory: [Double] = []
+    private let thresholdHistorySize = 30
+    
+    // MARK: - Timing Analysis
+    private var pulseDurations: [TimeInterval] = []
+    private var gapDurations: [TimeInterval] = []
+    private var estimatedDotDuration: TimeInterval = 0.08 // Will be updated adaptively
+    private var lastUpdateTime: CFAbsoluteTime = 0
+    
+    // MARK: - Preamble Detection
+    private var rawDetectedMorse: String = ""
+    
+    // MARK: - Debouncing
+    private var consecutiveHighSamples: Int = 0
+    private var consecutiveLowSamples: Int = 0
+    private let minSamplesForTransition = 2 // Require 2 consecutive samples to confirm transition
+    
     // MARK: - Sending History
     @Published var sendHistory: [MorseMessage] = []
     @Published var receiveHistory: [MorseMessage] = []
@@ -48,6 +69,9 @@ class MorseCodeEngine: ObservableObject {
     private var flashEvents: [MorseCode.FlashEvent] = []
     private var flashEventToMorseIndex: [Int?] = []
     private let soundService = MorseSoundService()
+    
+    // Gap detection timer
+    private var gapCheckTask: Task<Void, Never>?
 
     // MARK: - Sending
 
@@ -196,106 +220,148 @@ class MorseCodeEngine: ObservableObject {
 
     // MARK: - Receiving / Decoding
 
-    /// Called by the camera service when light level changes
-    func updateLightLevel(_ level: Double) {
-        // Smooth the incoming signal to reduce flicker noise, with faster rise time.
-        if smoothedLevel == 0 {
-            smoothedLevel = level
-            ambientLevel = level
-            emaMean = level
-            emaVariance = 0
+    /// Called by the camera service when light level changes - now with high-precision timestamp
+    func updateLightLevel(_ level: Double, timestamp: CFAbsoluteTime) {
+        currentBrightnessLevel = level
+        lastUpdateTime = timestamp
+        
+        guard isReceiving else { return }
+        
+        // Update adaptive threshold
+        updateAdaptiveThreshold(level)
+        
+        // Determine if signal is high or low with hysteresis
+        let isHigh = isSignalHigh(level)
+        
+        // Debounce: require consecutive samples to confirm state change
+        if isHigh {
+            consecutiveHighSamples += 1
+            consecutiveLowSamples = 0
         } else {
-            let riseFactor = 0.5
-            let fallFactor = 0.25
-            let alpha = level > smoothedLevel ? riseFactor : fallFactor
-            smoothedLevel = smoothedLevel * (1.0 - alpha) + level * alpha
+            consecutiveLowSamples += 1
+            consecutiveHighSamples = 0
         }
-
-        currentBrightnessLevel = smoothedLevel
-        let wasDetected = lightDetected
-
-        // Update ambient and noise estimates with EMA.
-        ambientLevel = ambientLevel * 0.98 + smoothedLevel * 0.02
-        let meanAlpha = 0.05
-        let delta = smoothedLevel - emaMean
-        emaMean = emaMean + meanAlpha * delta
-        emaVariance = (1.0 - meanAlpha) * (emaVariance + meanAlpha * delta * delta)
-        let std = max(0.01, sqrt(emaVariance))
-
-        let sensitivity = clamp(detectionThreshold, min: 0.1, max: 0.9)
-        let baseDelta = 0.02 + (0.25 * sensitivity)
-        let k = autoSensitivity ? (1.2 + (0.8 * sensitivity)) : 10.0
-        let adaptiveOn = emaMean + k * std
-        let adaptiveOff = emaMean + (k * 0.6) * std
-
-        let onThreshold = max(ambientLevel + baseDelta, adaptiveOn)
-        let offThreshold = max(ambientLevel + baseDelta * 0.7, adaptiveOff)
-
-        if smoothedLevel > onThreshold {
-            consecutiveOnSamples += 1
-            consecutiveOffSamples = 0
-        } else if smoothedLevel < offThreshold {
-            consecutiveOffSamples += 1
-            consecutiveOnSamples = 0
+        
+        // State machine transitions
+        processStateMachine(isHigh: isHigh, level: level, timestamp: timestamp)
+    }
+    
+    /// Legacy method for backward compatibility
+    func updateLightLevel(_ level: Double) {
+        updateLightLevel(level, timestamp: CFAbsoluteTimeGetCurrent())
+    }
+    
+    private func updateAdaptiveThreshold(_ level: Double) {
+        // Track noise floor (minimum) and signal peak (maximum)
+        if level < noiseFloor * 1.5 || thresholdHistory.count < 10 {
+            noiseFloor = noiseFloor * 0.95 + level * 0.05
         }
-
-        let requiredStableSamples = 1
-        if !wasDetected && consecutiveOnSamples >= requiredStableSamples {
-            lightDetected = true
-        } else if wasDetected && consecutiveOffSamples >= requiredStableSamples {
-            lightDetected = false
+        if level > signalPeak * 0.7 {
+            signalPeak = signalPeak * 0.9 + level * 0.1
         }
-
-        if isReceiving {
-            if lightDetected && !wasDetected {
-                // Light just turned on - start timing
-                onLightOn()
-            } else if !lightDetected && wasDetected {
-                // Light just turned off - record duration
-                onLightOff()
+        
+        // Keep history for statistics
+        thresholdHistory.append(level)
+        if thresholdHistory.count > thresholdHistorySize {
+            thresholdHistory.removeFirst()
+        }
+        
+        if autoSensitivity && thresholdHistory.count >= 10 {
+            // Calculate adaptive threshold between noise floor and signal peak
+            // Use Schmitt trigger style: different on/off thresholds
+            let range = max(0.1, signalPeak - noiseFloor)
+            let sensitivity = detectionThreshold // 0.1 (sensitive) to 0.9 (less sensitive)
+            
+            // Threshold at user-controlled point between noise and signal
+            adaptiveThreshold = noiseFloor + range * (0.2 + sensitivity * 0.4)
+        } else {
+            // Fixed threshold mode
+            adaptiveThreshold = detectionThreshold
+        }
+    }
+    
+    private func isSignalHigh(_ level: Double) -> Bool {
+        // Hysteresis: use different thresholds for on vs off transitions
+        let hysteresis = 0.08
+        let wasHigh = lightDetected
+        
+        if wasHigh {
+            // Currently high - need to go below lower threshold to turn off
+            return level > (adaptiveThreshold - hysteresis)
+        } else {
+            // Currently low - need to go above upper threshold to turn on
+            return level > (adaptiveThreshold + hysteresis)
+        }
+    }
+    
+    private func processStateMachine(isHigh: Bool, level: Double, timestamp: CFAbsoluteTime) {
+        switch detectorState {
+        case .idle:
+            if isReceiving {
+                detectorState = .waitingForSignal
+            }
+            
+        case .waitingForSignal:
+            if isHigh && consecutiveHighSamples >= minSamplesForTransition {
+                // Signal detected - start pulse
+                lightDetected = true
+                detectorState = .inPulse(startTime: timestamp)
+                gapCheckTask?.cancel()
+            }
+            
+        case .inPulse(let startTime):
+            if !isHigh && consecutiveLowSamples >= minSamplesForTransition {
+                // Pulse ended
+                lightDetected = false
+                let pulseDuration = timestamp - startTime
+                
+                // Filter out noise pulses (too short)
+                let minPulseDuration = estimatedDotDuration * 0.2
+                if pulseDuration >= minPulseDuration {
+                    processPulse(duration: pulseDuration)
+                }
+                
+                detectorState = .inGap(startTime: timestamp, lastPulseDuration: pulseDuration)
+                startGapMonitoring()
+            }
+            
+        case .inGap(let gapStartTime, _):
+            if isHigh && consecutiveHighSamples >= minSamplesForTransition {
+                // New pulse started
+                lightDetected = true
+                let gapDuration = timestamp - gapStartTime
+                processGap(duration: gapDuration)
+                
+                detectorState = .inPulse(startTime: timestamp)
+                gapCheckTask?.cancel()
             }
         }
     }
-
-    private var lightOnTime: Date?
-    private var lightOffTime: Date?
-    private var gapTimer: Task<Void, Never>?
-
-    private func onLightOn() {
-        lightOnTime = Date()
-        gapTimer?.cancel()
-    }
-
-    private func onLightOff() {
-        guard let onTime = lightOnTime else { return }
-        let duration = Date().timeIntervalSince(onTime)
-        lightOffTime = Date()
-
-        let dotDuration = currentDotDuration()
-        let threshold = dotDuration * 2.0
-        let minPulse = max(0.02, dotDuration * 0.3)
-
-        // Ignore very short pulses as noise.
-        if duration < minPulse {
-            return
+    
+    private func processPulse(duration: TimeInterval) {
+        // Store duration for adaptive timing
+        pulseDurations.append(duration)
+        if pulseDurations.count > 20 {
+            pulseDurations.removeFirst()
         }
-
-        updateEstimatedDotDuration(using: duration)
-
-        let signal: MorseSignal
-        let symbol: String
-        if duration < threshold {
-            signal = MorseSignal(type: .dot, duration: duration, timestamp: Date())
-            symbol = "."
-        } else {
-            signal = MorseSignal(type: .dash, duration: duration, timestamp: Date())
-            symbol = "-"
-        }
+        
+        // Update estimated dot duration using k-means style clustering
+        updateTimingEstimates()
+        
+        // Classify as dot or dash
+        let threshold = estimatedDotDuration * 2.0
+        let isDot = duration < threshold
+        let symbol = isDot ? "." : "-"
+        
+        // Create signal record
+        let signal = MorseSignal(
+            type: isDot ? .dot : .dash,
+            duration: duration,
+            timestamp: Date()
+        )
         receivedSignals.append(signal)
-
-        let wasPreambleDetected = preambleDetected
-
-        // In dedicated mode, buffer until preamble is found
+        
+        // Handle preamble detection in dedicated mode
         if dedicatedSourceMode && !preambleDetected {
             rawDetectedMorse += symbol
             checkForPreamble()
@@ -303,15 +369,119 @@ class MorseCodeEngine: ObservableObject {
                 return
             }
         }
-
-        if !dedicatedSourceMode || wasPreambleDetected {
-            detectedMorse += symbol
+        
+        // Add to detected morse
+        detectedMorse += symbol
+    }
+    
+    private func processGap(duration: TimeInterval) {
+        // Store gap duration
+        gapDurations.append(duration)
+        if gapDurations.count > 20 {
+            gapDurations.removeFirst()
         }
-
-        // Start gap timer to detect letter/word gaps
-        if !dedicatedSourceMode || wasPreambleDetected {
-            startGapTimer()
+        
+        // Don't add separators for element gaps (within a letter)
+        // Only letter gaps and word gaps add to the output
+    }
+    
+    private func startGapMonitoring() {
+        gapCheckTask?.cancel()
+        
+        gapCheckTask = Task { @MainActor in
+            // Wait for letter gap
+            let letterGapDuration = estimatedDotDuration * 3.5
+            try? await Task.sleep(nanoseconds: UInt64(letterGapDuration * 1_000_000_000))
+            
+            guard !Task.isCancelled else { return }
+            guard case .inGap = detectorState else { return }
+            
+            // Letter gap detected - add space
+            if shouldAddSeparator() {
+                detectedMorse += " "
+                tryDecode()
+            }
+            
+            // Wait more for word gap
+            let additionalWait = estimatedDotDuration * 4.0 // 7 - 3 = 4 more units
+            try? await Task.sleep(nanoseconds: UInt64(additionalWait * 1_000_000_000))
+            
+            guard !Task.isCancelled else { return }
+            guard case .inGap = detectorState else { return }
+            
+            // Word gap detected - add word separator
+            if shouldAddSeparator() {
+                detectedMorse += "/ "
+            }
         }
+    }
+    
+    private func shouldAddSeparator() -> Bool {
+        // Don't add separator if we're in preamble detection mode and haven't found it
+        if dedicatedSourceMode && !preambleDetected {
+            return false
+        }
+        // Don't add if morse is empty or already ends with separator
+        guard !detectedMorse.isEmpty else { return false }
+        let lastChar = detectedMorse.last
+        return lastChar != " " && lastChar != "/"
+    }
+    
+    private func updateTimingEstimates() {
+        guard pulseDurations.count >= 3 else {
+            // Use WPM-based estimate initially
+            estimatedDotDuration = MorseCode.Timing(wpm: sendingSpeed).dotDuration
+            return
+        }
+        
+        // K-means clustering to separate dots from dashes
+        let sorted = pulseDurations.sorted()
+        
+        // Initial centroids: shortest for dots, longest for dashes
+        var dotCentroid = sorted.first!
+        var dashCentroid = sorted.last!
+        
+        // Iterate to refine centroids
+        for _ in 0..<5 {
+            var dotSum: TimeInterval = 0
+            var dotCount = 0
+            var dashSum: TimeInterval = 0
+            var dashCount = 0
+            
+            let threshold = (dotCentroid + dashCentroid) / 2
+            
+            for duration in pulseDurations {
+                if duration < threshold {
+                    dotSum += duration
+                    dotCount += 1
+                } else {
+                    dashSum += duration
+                    dashCount += 1
+                }
+            }
+            
+            if dotCount > 0 {
+                dotCentroid = dotSum / Double(dotCount)
+            }
+            if dashCount > 0 {
+                dashCentroid = dashSum / Double(dashCount)
+            }
+        }
+        
+        // Estimate dot duration - prefer the dot cluster if we have both
+        if dashCentroid > dotCentroid * 1.5 {
+            // Clear separation - use dot cluster
+            estimatedDotDuration = dotCentroid
+        } else {
+            // No clear separation - use median of shorter half
+            let shortHalf = sorted.prefix(sorted.count / 2 + 1)
+            estimatedDotDuration = shortHalf[shortHalf.count / 2]
+        }
+        
+        // Clamp to reasonable range
+        let minDot: TimeInterval = 0.03
+        let maxDot: TimeInterval = 0.5
+        estimatedDotDuration = max(minDot, min(maxDot, estimatedDotDuration))
     }
     
     private func checkForPreamble() {
@@ -332,70 +502,21 @@ class MorseCodeEngine: ObservableObject {
         }
     }
 
-    private func startGapTimer() {
-        gapTimer?.cancel()
-        let dotDuration = currentDotDuration()
-        let letterGap = dotDuration * 3
-        let wordGap = dotDuration * 7
-
-        gapTimer = Task {
-            // Wait for letter gap duration
-            try? await Task.sleep(nanoseconds: UInt64(letterGap * 1.5 * 1_000_000_000))
-            if Task.isCancelled { return }
-
-            // This is at least a letter gap — add space
-            detectedMorse += " "
-            tryDecode()
-
-            // Wait more for word gap
-            try? await Task.sleep(nanoseconds: UInt64((wordGap - letterGap) * 1.5 * 1_000_000_000))
-            if Task.isCancelled { return }
-
-            // This is a word gap
-            detectedMorse += "/ "
-        }
-    }
-
     private func tryDecode() {
         decodedText = MorseCode.decode(detectedMorse.trimmingCharacters(in: .whitespaces))
-    }
-
-    private func currentDotDuration() -> TimeInterval {
-        let baseDot = MorseCode.Timing(wpm: sendingSpeed).dotDuration
-        if estimatedDotDuration > 0 {
-            return min(max(estimatedDotDuration, baseDot * 0.5), baseDot * 2.5)
-        }
-        return baseDot
-    }
-
-    private func clamp(_ value: Double, min: Double, max: Double) -> Double {
-        return Swift.max(min, Swift.min(max, value))
-    }
-
-    private func updateEstimatedDotDuration(using duration: TimeInterval) {
-        recentOnDurations.append(duration)
-        if recentOnDurations.count > 20 {
-            recentOnDurations.removeFirst(recentOnDurations.count - 20)
-        }
-
-        let sorted = recentOnDurations.sorted()
-        let sampleCount = max(1, sorted.count / 2)
-        let dotCandidates = sorted.prefix(sampleCount)
-        let medianIndex = dotCandidates.index(dotCandidates.startIndex, offsetBy: dotCandidates.count / 2)
-        let median = dotCandidates[medianIndex]
-
-        estimatedDotDuration = min(max(median, 0.03), 1.0)
     }
 
     func startReceiving() {
         isReceiving = true
         resetReceivingState()
         estimatedDotDuration = MorseCode.Timing(wpm: sendingSpeed).dotDuration
+        detectorState = .waitingForSignal
     }
 
     func stopReceiving() {
         isReceiving = false
-        gapTimer?.cancel()
+        gapCheckTask?.cancel()
+        detectorState = .idle
         tryDecode()
 
         if !detectedMorse.trimmingCharacters(in: .whitespaces).isEmpty {
@@ -411,10 +532,13 @@ class MorseCodeEngine: ObservableObject {
 
     func clearReceived() {
         resetReceivingState()
+        if isReceiving {
+            detectorState = .waitingForSignal
+        }
     }
 
     func resetReceivingState() {
-        gapTimer?.cancel()
+        gapCheckTask?.cancel()
         detectedMorse = ""
         decodedText = ""
         receivedSignals = []
@@ -422,14 +546,22 @@ class MorseCodeEngine: ObservableObject {
         preambleDetected = !dedicatedSourceMode
         lightDetected = false
         currentBrightnessLevel = 0
-        ambientLevel = 0
-        smoothedLevel = 0
-        emaMean = 0
-        emaVariance = 0
-        consecutiveOnSamples = 0
-        consecutiveOffSamples = 0
-        estimatedDotDuration = 0
-        recentOnDurations = []
+        
+        // Reset threshold adaptation
+        noiseFloor = 0.05
+        signalPeak = 0.5
+        thresholdHistory = []
+        
+        // Reset timing
+        pulseDurations = []
+        gapDurations = []
+        estimatedDotDuration = MorseCode.Timing(wpm: sendingSpeed).dotDuration
+        
+        // Reset debouncing
+        consecutiveHighSamples = 0
+        consecutiveLowSamples = 0
+        
+        detectorState = isReceiving ? .waitingForSignal : .idle
     }
 }
 
