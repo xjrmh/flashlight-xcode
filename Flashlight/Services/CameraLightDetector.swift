@@ -660,8 +660,10 @@ extension CameraLightDetector: AVCaptureVideoDataOutputSampleBufferDelegate {
             self?.lastAnalysis = analysis
         }
         
-        // Call update with high-precision timestamp
-        onBrightnessUpdate?(normalizedSignal, analysis.timestamp)
+        // Call update with high-precision timestamp on main actor for UI-safe updates
+        Task { @MainActor [weak self] in
+            self?.onBrightnessUpdate?(normalizedSignal, analysis.timestamp)
+        }
         
         lastFrameTime = analysis.timestamp
     }
