@@ -29,44 +29,44 @@ struct MorseSendView: View {
                 if isCompact {
                     VStack(spacing: 0) {
                         headerSection
-                            .padding(.horizontal, 20)
-                            .padding(.top, 20)
-                            .padding(.bottom, 12)
+                            .padding(.horizontal, 16)
+                            .padding(.top, 16)
+                            .padding(.bottom, 10)
 
                         ScrollView {
-                            VStack(spacing: 24) {
+                            VStack(spacing: 12) {
                                 inputSection
                                 morsePreviewSection
                                 speedControlSection
                                 sendControlSection
                             }
-                            .padding(.horizontal, 20)
-                            .padding(.bottom, 20)
+                            .padding(.horizontal, 16)
+                            .padding(.bottom, 16)
                         }
                     }
                 } else {
                     VStack(spacing: 0) {
                         headerSection
-                            .padding(.horizontal, 32)
-                            .padding(.top, 24)
-                            .padding(.bottom, 12)
+                            .padding(.horizontal, 24)
+                            .padding(.top, 20)
+                            .padding(.bottom, 10)
 
                         ScrollView {
-                            HStack(alignment: .top, spacing: 24) {
-                                VStack(spacing: 24) {
+                            HStack(alignment: .top, spacing: 16) {
+                                VStack(spacing: 12) {
                                     inputSection
                                     morsePreviewSection
                                 }
                                 .frame(maxWidth: .infinity)
 
-                                VStack(spacing: 24) {
+                                VStack(spacing: 12) {
                                     speedControlSection
                                     sendControlSection
                                 }
                                 .frame(maxWidth: .infinity)
                             }
-                            .padding(.horizontal, 32)
-                            .padding(.bottom, 32)
+                            .padding(.horizontal, 24)
+                            .padding(.bottom, 24)
                         }
                     }
                 }
@@ -108,8 +108,8 @@ struct MorseSendView: View {
     // MARK: - Input
 
     private var inputSection: some View {
-        LiquidGlassCard(cornerRadius: 20, padding: 16) {
-            VStack(alignment: .leading, spacing: 12) {
+        LiquidGlassCard(cornerRadius: 16, padding: 12) {
+            VStack(alignment: .leading, spacing: 10) {
                 Text("MESSAGE")
                     .font(.system(size: 11, weight: .bold))
                     .tracking(2)
@@ -144,8 +144,8 @@ struct MorseSendView: View {
     // MARK: - Morse Preview
 
     private var morsePreviewSection: some View {
-        LiquidGlassCard(cornerRadius: 20, padding: 16) {
-            VStack(alignment: .leading, spacing: 12) {
+        LiquidGlassCard(cornerRadius: 16, padding: 12) {
+            VStack(alignment: .leading, spacing: 10) {
                 HStack {
                     Text("MORSE CODE")
                         .font(.system(size: 11, weight: .bold))
@@ -190,8 +190,8 @@ struct MorseSendView: View {
     // MARK: - Speed Control
 
     private var speedControlSection: some View {
-        LiquidGlassCard(cornerRadius: 20, padding: 16) {
-            VStack(spacing: 16) {
+        LiquidGlassCard(cornerRadius: 16, padding: 12) {
+            VStack(spacing: 12) {
                 LiquidGlassSlider(
                     value: $morseEngine.sendingSpeed,
                     range: 5...30,
@@ -313,11 +313,11 @@ struct MorseSendView: View {
     // MARK: - Send Control
 
     private var sendControlSection: some View {
-        VStack(spacing: 16) {
+        VStack(spacing: 12) {
             if morseEngine.isSending {
                 // Progress bar
-                LiquidGlassCard(cornerRadius: 16, padding: 12) {
-                    VStack(spacing: 8) {
+                LiquidGlassCard(cornerRadius: 14, padding: 10) {
+                    VStack(spacing: 6) {
                         HStack {
                             Text("Transmitting...")
                                 .font(.system(size: 13, weight: .medium))
@@ -371,7 +371,7 @@ struct MorseSendView: View {
                 }
                 .foregroundStyle(morseEngine.isSending ? .white : .black)
                 .frame(maxWidth: .infinity)
-                .padding(.vertical, 18)
+                .padding(.vertical, 16)
                 .background(
                     ZStack {
                         if morseEngine.isSending {
@@ -402,7 +402,7 @@ struct MorseSendView: View {
                 }
                 .foregroundStyle(.white.opacity(0.8))
                 .frame(maxWidth: .infinity)
-                .padding(.vertical, 10)
+                .padding(.vertical, 8)
                 .background(
                     Capsule()
                         .fill(.ultraThinMaterial)
@@ -430,7 +430,7 @@ struct SendHistorySheet: View {
                 Color.black.ignoresSafeArea()
 
                 ScrollView {
-                    VStack(alignment: .leading, spacing: 12) {
+                    VStack(alignment: .leading, spacing: 10) {
                         if history.isEmpty {
                             Text("No messages sent yet")
                                 .font(.system(size: 14))
@@ -439,7 +439,7 @@ struct SendHistorySheet: View {
                                 .padding(.vertical, 40)
                         } else {
                             ForEach(history) { message in
-                                LiquidGlassCard(cornerRadius: 16, padding: 14) {
+                                LiquidGlassCard(cornerRadius: 14, padding: 12) {
                                     VStack(alignment: .leading, spacing: 8) {
                                         HStack {
                                             Text(message.text)
@@ -474,7 +474,7 @@ struct SendHistorySheet: View {
                             }
                         }
                     }
-                    .padding(20)
+                    .padding(16)
                 }
             }
             .navigationTitle("Send History")

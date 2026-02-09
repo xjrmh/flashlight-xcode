@@ -7,6 +7,10 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		36CBAB9D2F3A2B9200CC8673 /* MorseSender.swift in Sources */ = {isa = PBXBuildFile; fileRef = 36CBAB9C2F3A2B9200CC8673 /* MorseSender.swift */; };
+		36CBAB9F2F3A2BC900CC8673 /* MorseTimingAnalyzer.swift in Sources */ = {isa = PBXBuildFile; fileRef = 36CBAB9E2F3A2BC900CC8673 /* MorseTimingAnalyzer.swift */; };
+		36CBABA12F3A2C0B00CC8673 /* MorseReceiver.swift in Sources */ = {isa = PBXBuildFile; fileRef = 36CBABA02F3A2C0B00CC8673 /* MorseReceiver.swift */; };
+		36CBABA32F3A2C1600CC8673 /* Logger.swift in Sources */ = {isa = PBXBuildFile; fileRef = 36CBABA22F3A2C1600CC8673 /* Logger.swift */; };
 		36ED0DD12F395A75007A4BB0 /* MorseSoundService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 36ED0DD02F395A75007A4BB0 /* MorseSoundService.swift */; };
 		A10001 /* FlashlightApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10001 /* FlashlightApp.swift */; };
 		A10002 /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10002 /* ContentView.swift */; };
@@ -24,6 +28,10 @@
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
+		36CBAB9C2F3A2B9200CC8673 /* MorseSender.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MorseSender.swift; sourceTree = "<group>"; };
+		36CBAB9E2F3A2BC900CC8673 /* MorseTimingAnalyzer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MorseTimingAnalyzer.swift; sourceTree = "<group>"; };
+		36CBABA02F3A2C0B00CC8673 /* MorseReceiver.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MorseReceiver.swift; sourceTree = "<group>"; };
+		36CBABA22F3A2C1600CC8673 /* Logger.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Logger.swift; sourceTree = "<group>"; };
 		36ED0DD02F395A75007A4BB0 /* MorseSoundService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MorseSoundService.swift; sourceTree = "<group>"; };
 		B10001 /* FlashlightApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FlashlightApp.swift; sourceTree = "<group>"; };
 		B10002 /* ContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentView.swift; sourceTree = "<group>"; };
@@ -92,6 +100,10 @@
 				B10005 /* MorseCodeEngine.swift */,
 				B10006 /* CameraLightDetector.swift */,
 				36ED0DD02F395A75007A4BB0 /* MorseSoundService.swift */,
+				36CBAB9C2F3A2B9200CC8673 /* MorseSender.swift */,
+				36CBAB9E2F3A2BC900CC8673 /* MorseTimingAnalyzer.swift */,
+				36CBABA02F3A2C0B00CC8673 /* MorseReceiver.swift */,
+				36CBABA22F3A2C1600CC8673 /* Logger.swift */,
 			);
 			path = Services;
 			sourceTree = "<group>";
@@ -204,14 +216,18 @@
 				A10001 /* FlashlightApp.swift in Sources */,
 				A10002 /* ContentView.swift in Sources */,
 				A10003 /* FlashlightService.swift in Sources */,
+				36CBAB9D2F3A2B9200CC8673 /* MorseSender.swift in Sources */,
 				A10004 /* MorseCode.swift in Sources */,
 				A10005 /* MorseCodeEngine.swift in Sources */,
+				36CBAB9F2F3A2BC900CC8673 /* MorseTimingAnalyzer.swift in Sources */,
+				36CBABA32F3A2C1600CC8673 /* Logger.swift in Sources */,
 				A10006 /* CameraLightDetector.swift in Sources */,
 				36ED0DD12F395A75007A4BB0 /* MorseSoundService.swift in Sources */,
 				A10007 /* LiquidGlassView.swift in Sources */,
 				A10008 /* FlashlightView.swift in Sources */,
 				A10009 /* MorseSendView.swift in Sources */,
 				A10010 /* MorseReceiveView.swift in Sources */,
+				36CBABA12F3A2C0B00CC8673 /* MorseReceiver.swift in Sources */,
 				A10011 /* MorseReferenceSheet.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;

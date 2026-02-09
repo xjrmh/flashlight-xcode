@@ -2,6 +2,8 @@ import AVFoundation
 import SwiftUI
 import CoreImage
 import Accelerate
+import ImageIO
+import os.log
 
 /// Detailed light analysis for debugging and visualization
 struct LightAnalysis {
@@ -50,6 +52,7 @@ class CameraLightDetector: NSObject, ObservableObject {
     private var videoOutput: AVCaptureVideoDataOutput?
     private var camera: AVCaptureDevice?
     private let processingQueue = DispatchQueue(label: "com.flashlight.camera", qos: .userInteractive)
+    private let ciContext = CIContext()
     
     // MARK: - Calibration
     private var calibrationFrameCount = 0
@@ -87,10 +90,63 @@ class CameraLightDetector: NSObject, ObservableObject {
         let width: Int
         let height: Int
     }
+    
+    // MARK: - Memory Pressure Monitoring
+    private var memoryPressureSource: DispatchSourceMemoryPressure?
+    @Published var isUnderMemoryPressure = false
+    
+    /// Estimated memory usage of recorded frames in bytes
+    var recordingMemoryUsage: Int {
+        recordedFrames.reduce(0) { $0 + $1.imageData.count }
+    }
+    
+    /// Formatted memory usage string
+    var recordingMemoryUsageFormatted: String {
+        let bytes = recordingMemoryUsage
+        if bytes < 1024 * 1024 {
+            return String(format: "%.1f KB", Double(bytes) / 1024.0)
+        } else {
+            return String(format: "%.1f MB", Double(bytes) / (1024.0 * 1024.0))
+        }
+    }
 
     override init() {
         super.init()
         permissionStatus = AVCaptureDevice.authorizationStatus(for: .video)
+        setupMemoryPressureMonitoring()
+    }
+    
+    deinit {
+        memoryPressureSource?.cancel()
+    }
+    
+    private func setupMemoryPressureMonitoring() {
+        memoryPressureSource = DispatchSource.makeMemoryPressureSource(eventMask: [.warning, .critical], queue: .main)
+        
+        memoryPressureSource?.setEventHandler { [weak self] in
+            guard let self = self else { return }
+            
+            let event = self.memoryPressureSource?.data ?? []
+            
+            if event.contains(.critical) {
+                Logger.log("Critical memory pressure - clearing recording buffer", level: .warning, category: .camera)
+                self.isUnderMemoryPressure = true
+                self.clearRecording()
+                self.stopRecording()
+            } else if event.contains(.warning) {
+                Logger.log("Memory pressure warning - recording has \(self.recordingMemoryUsageFormatted)", level: .warning, category: .camera)
+                self.isUnderMemoryPressure = true
+                
+                // If we have a lot of frames, trim to half
+                if self.recordedFrames.count > 300 {
+                    let keepCount = self.recordedFrames.count / 2
+                    self.recordedFrames = Array(self.recordedFrames.suffix(keepCount))
+                    Logger.log("Trimmed recording to \(keepCount) frames", level: .info, category: .camera)
+                }
+            }
+        }
+        
+        memoryPressureSource?.resume()
     }
 
     func checkPermission(completion: @escaping (Bool) -> Void) {
@@ -125,7 +181,7 @@ class CameraLightDetector: NSObject, ObservableObject {
         session.sessionPreset = .high
 
         guard let cameraDevice = AVCaptureDevice.default(.builtInWideAngleCamera, for: .video, position: .back) else {
-            print("No back camera available")
+            Logger.log("No back camera available", level: .error, category: .camera)
             return
         }
 
@@ -193,7 +249,7 @@ class CameraLightDetector: NSObject, ObservableObject {
             }
 
         } catch {
-            print("Camera setup error: \(error.localizedDescription)")
+            Logger.logError("Camera setup failed", error: error, category: .camera)
         }
     }
 
@@ -213,7 +269,7 @@ class CameraLightDetector: NSObject, ObservableObject {
             
             camera.unlockForConfiguration()
         } catch {
-            print("Failed to lock camera settings: \(error.localizedDescription)")
+            Logger.logError("Failed to lock camera settings", error: error, category: .camera)
         }
     }
 
@@ -375,41 +431,33 @@ class CameraLightDetector: NSObject, ObservableObject {
     
     private func compressFrame(_ pixelBuffer: CVPixelBuffer, timestamp: CFAbsoluteTime) -> RecordedFrame? {
         var ciImage = CIImage(cvPixelBuffer: pixelBuffer)
-        let context = CIContext()
-        
+
         // Camera captures in landscape, rotate to portrait (90 degrees clockwise)
         // The orientation transform rotates the image to match the screen orientation
         ciImage = ciImage.oriented(.right)
-        
-        let width = Int(ciImage.extent.width)
-        let height = Int(ciImage.extent.height)
-        
+
         // Scale down for memory efficiency
         let scale: CGFloat = 0.3
-        let scaledWidth = Int(CGFloat(width) * scale)
-        let scaledHeight = Int(CGFloat(height) * scale)
-        
-        guard let cgImage = context.createCGImage(ciImage, from: ciImage.extent) else { return nil }
-        
-        // Create UIImage with correct orientation and scale it down
-        let uiImage = UIImage(cgImage: cgImage)
-        
-        // Resize the image
-        let targetSize = CGSize(width: scaledWidth, height: scaledHeight)
-        UIGraphicsBeginImageContextWithOptions(targetSize, false, 1.0)
-        uiImage.draw(in: CGRect(origin: .zero, size: targetSize))
-        let resizedImage = UIGraphicsGetImageFromCurrentImageContext()
-        UIGraphicsEndImageContext()
-        
-        guard let finalImage = resizedImage,
-              let jpegData = finalImage.jpegData(compressionQuality: 0.5) else { return nil }
-        
+        let scaledImage = ciImage.transformed(by: CGAffineTransform(scaleX: scale, y: scale))
+        let scaledWidth = Int(scaledImage.extent.width)
+        let scaledHeight = Int(scaledImage.extent.height)
+
+        let colorSpace = CGColorSpaceCreateDeviceRGB()
+        let options: [CIImageRepresentationOption: Any] = [
+            kCGImageDestinationLossyCompressionQuality as CIImageRepresentationOption: 0.5
+        ]
+
+        guard let jpegData = ciContext.jpegRepresentation(of: scaledImage, colorSpace: colorSpace, options: options) else {
+            return nil
+        }
+
         return RecordedFrame(imageData: jpegData, timestamp: timestamp, width: scaledWidth, height: scaledHeight)
     }
-    
+
     private func decompressFrame(_ frame: RecordedFrame) -> CGImage? {
-        guard let uiImage = UIImage(data: frame.imageData) else { return nil }
-        return uiImage.cgImage
+        let data = frame.imageData as CFData
+        guard let source = CGImageSourceCreateWithData(data, nil) else { return nil }
+        return CGImageSourceCreateImageAtIndex(source, 0, nil)
     }
     
     /// Analyze a CGImage for light source (used in replay/reprocess)

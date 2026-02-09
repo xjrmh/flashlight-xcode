@@ -1005,7 +1005,6 @@ class MorseCodeEngine: ObservableObject {
         
         // Step 4: Rebuild morse string using ratio-based classification
         var verifiedMorse = ""
-        _ = 0
         
         for event in signalSequence {
             switch event {

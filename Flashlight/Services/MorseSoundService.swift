@@ -49,7 +49,7 @@ final class MorseSoundService {
             try session.setActive(true)
             isConfigured = true
         } catch {
-            print("Audio session error: \(error.localizedDescription)")
+            Logger.logError("Audio session configuration failed", error: error, category: .morse)
             // Leave isConfigured false to allow retry on next attempt
         }
     }
@@ -64,7 +64,7 @@ final class MorseSoundService {
             do {
                 try engine.start()
             } catch {
-                print("Audio engine error: \(error.localizedDescription)")
+                Logger.logError("Audio engine failed to start", error: error, category: .morse)
             }
         }
     }

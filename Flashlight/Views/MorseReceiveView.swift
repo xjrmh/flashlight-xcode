@@ -27,52 +27,52 @@ struct MorseReceiveView: View {
                 if isCompact {
                     VStack(spacing: 0) {
                         headerSection
-                            .padding(.horizontal, 20)
-                            .padding(.top, 20)
-                            .padding(.bottom, 12)
+                            .padding(.horizontal, 16)
+                            .padding(.top, 16)
+                            .padding(.bottom, 10)
 
                         cameraPreviewSection
-                            .padding(.horizontal, 20)
-                            .padding(.bottom, 12)
+                            .padding(.horizontal, 16)
+                            .padding(.bottom, 10)
 
                         ScrollView {
-                            VStack(spacing: 20) {
+                            VStack(spacing: 12) {
                                 signalIndicator
                                 decodedSection
                                 controlsSection
                                 settingsSection
                             }
-                            .padding(.horizontal, 20)
-                            .padding(.bottom, 20)
+                            .padding(.horizontal, 16)
+                            .padding(.bottom, 16)
                         }
                     }
                 } else {
                     VStack(spacing: 0) {
                         headerSection
-                            .padding(.horizontal, 32)
-                            .padding(.top, 24)
-                            .padding(.bottom, 12)
+                            .padding(.horizontal, 24)
+                            .padding(.top, 20)
+                            .padding(.bottom, 10)
 
-                        HStack(alignment: .top, spacing: 24) {
-                            VStack(spacing: 20) {
+                        HStack(alignment: .top, spacing: 16) {
+                            VStack(spacing: 12) {
                                 cameraPreviewSection
                                 signalIndicator
                             }
                             .frame(maxWidth: .infinity)
 
                             ScrollView {
-                                VStack(spacing: 20) {
+                                VStack(spacing: 12) {
                                     decodedSection
                                     controlsSection
                                     settingsSection
                                 }
                                 .frame(maxWidth: .infinity, alignment: .top)
-                                .padding(.bottom, 32)
+                                .padding(.bottom, 24)
                             }
                             .frame(maxWidth: .infinity)
                         }
-                        .padding(.horizontal, 32)
-                        .padding(.bottom, 32)
+                        .padding(.horizontal, 24)
+                        .padding(.bottom, 24)
                     }
                 }
             }
@@ -344,8 +344,8 @@ struct MorseReceiveView: View {
     // MARK: - Signal Indicator
 
     private var signalIndicator: some View {
-        LiquidGlassCard(cornerRadius: 16, padding: 12) {
-            VStack(spacing: 10) {
+        LiquidGlassCard(cornerRadius: 14, padding: 10) {
+            VStack(spacing: 8) {
                 HStack {
                     Text("SIGNAL")
                         .font(.system(size: 11, weight: .bold))
@@ -529,8 +529,8 @@ struct MorseReceiveView: View {
     // MARK: - Decoded Section
 
     private var decodedSection: some View {
-        LiquidGlassCard(cornerRadius: 20, padding: 16) {
-            VStack(alignment: .leading, spacing: 12) {
+        LiquidGlassCard(cornerRadius: 16, padding: 12) {
+            VStack(alignment: .leading, spacing: 10) {
                 // Morse code section
                 HStack {
                     Text("MORSE CODE")
@@ -601,8 +601,8 @@ struct MorseReceiveView: View {
     // MARK: - Settings
 
     private var settingsSection: some View {
-        LiquidGlassCard(cornerRadius: 20, padding: 16) {
-            VStack(spacing: 16) {
+        LiquidGlassCard(cornerRadius: 16, padding: 12) {
+            VStack(spacing: 12) {
                 // Source mode toggle (always visible)
                 // Toggle ON = All Light Sources, Toggle OFF = Dedicated Source
                 HStack {
@@ -733,7 +733,7 @@ struct MorseReceiveView: View {
     }
 
     private var controlsSection: some View {
-        HStack(spacing: 12) {
+        HStack(spacing: 10) {
             // Replay mode: Exit replay button
             if isInReplayMode {
                 Button {
@@ -913,7 +913,7 @@ struct ReceiveHistorySheet: View {
                 Color.black.ignoresSafeArea()
 
                 ScrollView {
-                    VStack(alignment: .leading, spacing: 12) {
+                    VStack(alignment: .leading, spacing: 10) {
                         if history.isEmpty {
                             Text("No messages received yet")
                                 .font(.system(size: 14))
@@ -922,7 +922,7 @@ struct ReceiveHistorySheet: View {
                                 .padding(.vertical, 40)
                         } else {
                             ForEach(history) { message in
-                                LiquidGlassCard(cornerRadius: 16, padding: 14) {
+                                LiquidGlassCard(cornerRadius: 14, padding: 12) {
                                     VStack(alignment: .leading, spacing: 8) {
                                         HStack {
                                             Text(message.text)
@@ -957,7 +957,7 @@ struct ReceiveHistorySheet: View {
                             }
                         }
                     }
-                    .padding(20)
+                    .padding(16)
                 }
             }
             .navigationTitle("Receive History")

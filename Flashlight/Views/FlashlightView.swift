@@ -63,12 +63,12 @@ struct FlashlightView: View {
                         
                         // Fixed control panel at bottom, just above tab bar
                         controlPanel
-                            .padding(.horizontal, 20)
-                            .padding(.bottom, 20)
+                            .padding(.horizontal, 16)
+                            .padding(.bottom, 16)
                     }
                 } else {
                     // iPad layout — horizontal split
-                    HStack(spacing: 40) {
+                    HStack(spacing: 24) {
                         VStack {
                             Spacer()
                             torchVisual
@@ -83,7 +83,7 @@ struct FlashlightView: View {
                         }
                         .frame(maxWidth: .infinity)
                     }
-                    .padding(40)
+                    .padding(24)
                 }
             }
         }
@@ -360,8 +360,8 @@ struct FlashlightView: View {
     // MARK: - Control Panel
 
     private var controlPanel: some View {
-        LiquidGlassCard(cornerRadius: 28, padding: 24) {
-            VStack(spacing: 20) {
+        LiquidGlassCard(cornerRadius: 20, padding: 16) {
+            VStack(spacing: 14) {
                 // Brightness slider
                 LiquidGlassSlider(
                     value: brightnessBinding,
@@ -375,7 +375,7 @@ struct FlashlightView: View {
                     .background(Color.white.opacity(0.1))
 
                 // Timer slider
-                VStack(spacing: 8) {
+                VStack(spacing: 6) {
                     HStack {
                         Image(systemName: "timer")
                             .font(.system(size: 14))
@@ -433,7 +433,7 @@ struct FlashlightView: View {
                     .background(Color.white.opacity(0.1))
 
                 // Quick presets
-                HStack(spacing: 12) {
+                HStack(spacing: 10) {
                     PresetButton(
                         title: "Moonlight",
                         icon: "moon.fill",
