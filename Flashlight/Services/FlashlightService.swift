@@ -129,12 +129,12 @@ class FlashlightService: ObservableObject {
         guard device.hasTorch, device.isTorchAvailable else { return }
         do {
             try device.lockForConfiguration()
+            defer { device.unlockForConfiguration() }
             if isOn {
                 try device.setTorchModeOn(level: level)
             } else {
                 device.torchMode = .off
             }
-            device.unlockForConfiguration()
         } catch {
             torchError = error.localizedDescription
         }
@@ -163,14 +163,13 @@ class FlashlightService: ObservableObject {
 
         do {
             try device.lockForConfiguration()
+            defer { device.unlockForConfiguration() }
 
             if isOn {
                 try device.setTorchModeOn(level: Float(brightness))
             } else {
                 device.torchMode = .off
             }
-
-            device.unlockForConfiguration()
         } catch {
             torchError = error.localizedDescription
             isOn = false

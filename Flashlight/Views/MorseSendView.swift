@@ -1,10 +1,12 @@
 import SwiftUI
+import UIKit
 
 struct MorseSendView: View {
     @EnvironmentObject var flashlight: FlashlightService
     @EnvironmentObject var morseEngine: MorseCodeEngine
 
     @State private var showHistory = false
+    @State private var hasPrewarmedKeyboard = false
 
     var body: some View {
         ZStack {
@@ -13,6 +15,13 @@ struct MorseSendView: View {
                 .onTapGesture {
                     UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
                 }
+            
+            // Hidden keyboard pre-warmer
+            if !hasPrewarmedKeyboard {
+                KeyboardPrewarmer {
+                    hasPrewarmedKeyboard = true
+                }
+            }
 
             GeometryReader { geometry in
                 let isCompact = geometry.size.width < 600
@@ -442,10 +451,24 @@ struct SendHistorySheet: View {
                                                 .foregroundStyle(.white.opacity(0.3))
                                         }
 
-                                        Text(message.morse)
-                                            .font(.system(size: 12, design: .monospaced))
-                                            .foregroundStyle(.cyan.opacity(0.6))
-                                            .lineLimit(2)
+                                        HStack {
+                                            Text(message.morse)
+                                                .font(.system(size: 12, design: .monospaced))
+                                                .foregroundStyle(.cyan.opacity(0.6))
+                                                .lineLimit(2)
+                                            
+                                            Spacer()
+                                            
+                                            Button {
+                                                UIPasteboard.general.string = "\(message.text)\n\(message.morse)"
+                                                HapticFeedback.impact(.light)
+                                            } label: {
+                                                Image(systemName: "doc.on.doc")
+                                                    .font(.system(size: 14))
+                                                    .foregroundStyle(.white.opacity(0.4))
+                                            }
+                                            .buttonStyle(HapticButtonStyle())
+                                        }
                                     }
                                 }
                             }
@@ -475,55 +498,68 @@ struct MorseVisualizer: View {
     var highlightedIndex: Int?
 
     var body: some View {
-        let elements = parseMorse()
-
         ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 3) {
-                ForEach(Array(elements.enumerated()), id: \.offset) { index, element in
-                    morseElement(element, isActive: index == (highlightedIndex ?? -1))
+            LazyHStack(spacing: 3) {
+                ForEach(Array(morse.enumerated()), id: \.offset) { index, char in
+                    MorseElementView(
+                        char: char,
+                        isActive: index == (highlightedIndex ?? -1)
+                    )
                 }
             }
             .padding(.vertical, 8)
         }
     }
+}
 
-    private func parseMorse() -> [MorseElement] {
-        var elements: [MorseElement] = []
-        for char in morse {
-            switch char {
-            case ".": elements.append(.dot)
-            case "-": elements.append(.dash)
-            case " ": elements.append(.letterGap)
-            case "/": elements.append(.wordGap)
-            default: break
-            }
-        }
-        return elements
-    }
-
-    @ViewBuilder
-    private func morseElement(_ element: MorseElement, isActive: Bool) -> some View {
-        switch element {
-        case .dot:
+// Separate view for better performance - avoids recreating all elements
+private struct MorseElementView: View {
+    let char: Character
+    let isActive: Bool
+    
+    var body: some View {
+        switch char {
+        case ".":
             RoundedRectangle(cornerRadius: 2)
                 .fill(isActive ? Color.white : Color.cyan.opacity(0.6))
                 .frame(width: 8, height: 14)
-                .shadow(color: isActive ? .white.opacity(0.5) : .clear, radius: 4)
-        case .dash:
+        case "-":
             RoundedRectangle(cornerRadius: 2)
                 .fill(isActive ? Color.white : Color.cyan.opacity(0.6))
                 .frame(width: 22, height: 14)
-                .shadow(color: isActive ? .white.opacity(0.5) : .clear, radius: 4)
-        case .letterGap:
+        case " ":
             Color.clear.frame(width: 8, height: 14)
-        case .wordGap:
+        case "/":
             Color.clear.frame(width: 16, height: 14)
+        default:
+            EmptyView()
         }
     }
+}
 
-    enum MorseElement {
-        case dot, dash, letterGap, wordGap
+// MARK: - Keyboard Prewarmer
+
+struct KeyboardPrewarmer: UIViewRepresentable {
+    let onComplete: () -> Void
+    
+    func makeUIView(context: Context) -> UITextField {
+        let textField = UITextField()
+        textField.alpha = 0
+        textField.isUserInteractionEnabled = false
+        
+        // Pre-warm keyboard on next run loop
+        DispatchQueue.main.async {
+            textField.becomeFirstResponder()
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+                textField.resignFirstResponder()
+                onComplete()
+            }
+        }
+        
+        return textField
     }
+    
+    func updateUIView(_ uiView: UITextField, context: Context) {}
 }
 
 #Preview {

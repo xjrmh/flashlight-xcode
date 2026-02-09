@@ -1,12 +1,12 @@
 import SwiftUI
 import AVFoundation
+import UIKit
 
 struct MorseReceiveView: View {
     @EnvironmentObject var morseEngine: MorseCodeEngine
     @StateObject private var cameraDetector = CameraLightDetector()
 
     @State private var showHistory = false
-    @State private var showSettings = false
     @State private var showPermissionAlert = false
     
     // Replay mode state
@@ -134,25 +134,13 @@ struct MorseReceiveView: View {
 
             Spacer()
 
-            HStack(spacing: 8) {
-                LiquidGlassButton(
-                    title: nil,
-                    icon: "slider.horizontal.3",
-                    isActive: showSettings
-                ) {
-                    withAnimation(.spring(response: 0.3)) {
-                        showSettings.toggle()
-                    }
-                }
-
-                LiquidGlassButton(
-                    title: nil,
-                    icon: "clock.arrow.circlepath",
-                    isActive: showHistory
-                ) {
-                    withAnimation(.spring(response: 0.3)) {
-                        showHistory.toggle()
-                    }
+            LiquidGlassButton(
+                title: nil,
+                icon: "clock.arrow.circlepath",
+                isActive: showHistory
+            ) {
+                withAnimation(.spring(response: 0.3)) {
+                    showHistory.toggle()
                 }
             }
         }
@@ -643,95 +631,93 @@ struct MorseReceiveView: View {
                         .tint(.cyan)
                 }
 
-                if showSettings {
-                    Divider().background(Color.white.opacity(0.1))
+                Divider().background(Color.white.opacity(0.1))
 
-                    HStack {
-                        Image(systemName: "waveform.path.ecg")
-                            .font(.system(size: 16))
-                            .foregroundStyle(morseEngine.autoSensitivity ? .green : .white.opacity(0.6))
-                            .frame(width: 24)
+                HStack {
+                    Image(systemName: "waveform.path.ecg")
+                        .font(.system(size: 16))
+                        .foregroundStyle(morseEngine.autoSensitivity ? .green : .white.opacity(0.6))
+                        .frame(width: 24)
 
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text("Auto Sensitivity")
-                                .font(.system(size: 14, weight: .medium))
-                                .foregroundStyle(.white)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Auto Sensitivity")
+                            .font(.system(size: 14, weight: .medium))
+                            .foregroundStyle(.white)
 
-                            Text("Adapts to ambient light conditions")
-                                .font(.system(size: 11))
-                                .foregroundStyle(.white.opacity(0.4))
-                        }
-
-                        Spacer()
-
-                        Toggle("", isOn: $morseEngine.autoSensitivity)
-                            .labelsHidden()
-                            .tint(.green)
+                        Text("Adapts to ambient light conditions")
+                            .font(.system(size: 11))
+                            .foregroundStyle(.white.opacity(0.4))
                     }
 
-                    // Only show manual sensitivity slider when auto-sensitivity is OFF
-                    if !morseEngine.autoSensitivity {
-                        LiquidGlassSlider(
-                            value: $morseEngine.detectionThreshold,
-                            range: 0.1...0.9,
-                            label: "Detection Sensitivity",
-                            icon: "waveform.path",
-                            accentColor: .green
-                        )
+                    Spacer()
+
+                    Toggle("", isOn: $morseEngine.autoSensitivity)
+                        .labelsHidden()
+                        .tint(.green)
+                }
+
+                // Only show manual sensitivity slider when auto-sensitivity is OFF
+                if !morseEngine.autoSensitivity {
+                    LiquidGlassSlider(
+                        value: $morseEngine.detectionThreshold,
+                        range: 0.1...0.9,
+                        label: "Detection Sensitivity",
+                        icon: "waveform.path",
+                        accentColor: .green
+                    )
+                }
+                
+                Divider().background(Color.white.opacity(0.1))
+                
+                // Auto-detected WPM display
+                HStack {
+                    Image(systemName: "gauge.with.dots.needle.67percent")
+                        .font(.system(size: 16))
+                        .foregroundStyle(.orange)
+                        .frame(width: 24)
+                    
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Detected Speed")
+                            .font(.system(size: 14, weight: .medium))
+                            .foregroundStyle(.white)
+                        
+                        Text(morseEngine.timingConfidence.rawValue)
+                            .font(.system(size: 11))
+                            .foregroundStyle(timingConfidenceColor)
                     }
                     
-                    Divider().background(Color.white.opacity(0.1))
+                    Spacer()
                     
-                    // Auto-detected WPM display
-                    HStack {
-                        Image(systemName: "gauge.with.dots.needle.67percent")
-                            .font(.system(size: 16))
+                    if morseEngine.detectedWPM > 0 {
+                        Text("\(Int(morseEngine.detectedWPM)) WPM")
+                            .font(.system(size: 16, weight: .bold, design: .monospaced))
                             .foregroundStyle(.orange)
+                    } else {
+                        Text("--")
+                            .font(.system(size: 16, weight: .bold, design: .monospaced))
+                            .foregroundStyle(.white.opacity(0.3))
+                    }
+                }
+                    
+                // Gap timing info (debug)
+                if !morseEngine.gapTimingInfo.isEmpty {
+                    HStack {
+                        Image(systemName: "timer")
+                            .font(.system(size: 16))
+                            .foregroundStyle(.cyan.opacity(0.7))
                             .frame(width: 24)
                         
                         VStack(alignment: .leading, spacing: 2) {
-                            Text("Detected Speed")
+                            Text("Gap Thresholds")
                                 .font(.system(size: 14, weight: .medium))
                                 .foregroundStyle(.white)
                             
-                            Text(morseEngine.timingConfidence.rawValue)
-                                .font(.system(size: 11))
-                                .foregroundStyle(timingConfidenceColor)
+                            Text(morseEngine.gapTimingInfo)
+                                .font(.system(size: 11, design: .monospaced))
+                                .foregroundStyle(.cyan.opacity(0.6))
                         }
                         
                         Spacer()
-                        
-                        if morseEngine.detectedWPM > 0 {
-                            Text("\(Int(morseEngine.detectedWPM)) WPM")
-                                .font(.system(size: 16, weight: .bold, design: .monospaced))
-                                .foregroundStyle(.orange)
-                        } else {
-                            Text("--")
-                                .font(.system(size: 16, weight: .bold, design: .monospaced))
-                                .foregroundStyle(.white.opacity(0.3))
-                        }
-                    }
-                    
-                    // Gap timing info (debug)
-                    if !morseEngine.gapTimingInfo.isEmpty {
-                        HStack {
-                            Image(systemName: "timer")
-                                .font(.system(size: 16))
-                                .foregroundStyle(.cyan.opacity(0.7))
-                                .frame(width: 24)
-                            
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text("Gap Thresholds")
-                                    .font(.system(size: 14, weight: .medium))
-                                    .foregroundStyle(.white)
-                                
-                                Text(morseEngine.gapTimingInfo)
-                                    .font(.system(size: 11, design: .monospaced))
-                                    .foregroundStyle(.cyan.opacity(0.6))
-                            }
-                            
-                            Spacer()
-                        }
                     }
                 }
             }
@@ -948,10 +934,24 @@ struct ReceiveHistorySheet: View {
                                                 .foregroundStyle(.white.opacity(0.3))
                                         }
 
-                                        Text(message.morse)
-                                            .font(.system(size: 12, design: .monospaced))
-                                            .foregroundStyle(.green.opacity(0.6))
-                                            .lineLimit(2)
+                                        HStack {
+                                            Text(message.morse)
+                                                .font(.system(size: 12, design: .monospaced))
+                                                .foregroundStyle(.green.opacity(0.6))
+                                                .lineLimit(2)
+                                            
+                                            Spacer()
+                                            
+                                            Button {
+                                                UIPasteboard.general.string = "\(message.text)\n\(message.morse)"
+                                                HapticFeedback.impact(.light)
+                                            } label: {
+                                                Image(systemName: "doc.on.doc")
+                                                    .font(.system(size: 14))
+                                                    .foregroundStyle(.white.opacity(0.4))
+                                            }
+                                            .buttonStyle(HapticButtonStyle())
+                                        }
                                     }
                                 }
                             }

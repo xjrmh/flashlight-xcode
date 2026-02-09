@@ -13,11 +13,11 @@ class MorseCodeEngine: ObservableObject {
     @Published var isSending: Bool = false
     @Published var currentSendIndex: Int = 0
     @Published var currentSendElementIndex: Int? = nil
-    @Published var sendingSpeed: Double = 5 // WPM
+    @Published var sendingSpeed: Double = 10 // WPM
     @Published var loopSending: Bool = false
     @Published var currentLoopCount: Int = 0
     @Published var sendWithSound: Bool = false
-    @Published var sendWithPreamble: Bool = true
+    @Published var sendWithPreamble: Bool = false
 
     // MARK: - Receiving State
     @Published var isReceiving: Bool = false
@@ -82,8 +82,17 @@ class MorseCodeEngine: ObservableObject {
     private let minSamplesForTransition = 2 // Require 2 consecutive samples to confirm transition
     
     // MARK: - Sending History
-    @Published var sendHistory: [MorseMessage] = []
-    @Published var receiveHistory: [MorseMessage] = []
+    @Published var sendHistory: [MorseMessage] = [] {
+        didSet { saveSendHistory() }
+    }
+    @Published var receiveHistory: [MorseMessage] = [] {
+        didSet { saveReceiveHistory() }
+    }
+    
+    // MARK: - Persistence Keys
+    private static let sendHistoryKey = "MorseCodeEngine.sendHistory"
+    private static let receiveHistoryKey = "MorseCodeEngine.receiveHistory"
+    private static let maxHistoryItems = 100
 
     private var sendTask: Task<Void, Never>?
     private var flashEvents: [MorseCode.FlashEvent] = []
@@ -108,9 +117,11 @@ class MorseCodeEngine: ObservableObject {
     }
 
     func startSending(using flashlightService: FlashlightService) {
-        guard !inputText.isEmpty else { return }
+        guard !inputText.isEmpty, !isSending else { return }
 
         updateMorseRepresentation()
+        let messageText = inputText
+        let messageMorse = morseRepresentation
         let timing = MorseCode.Timing(wpm: sendingSpeed)
         
         // Build full sequence: optional preamble + letter gap + message
@@ -126,7 +137,18 @@ class MorseCodeEngine: ObservableObject {
         let previousBrightness = flashlightService.brightness
         flashlightService.lockBrightnessToMax()
 
-        sendTask = Task {
+        sendTask = Task { [messageText, messageMorse] in
+            defer {
+                flashlightService.turnOff()
+                soundService.stop()
+                flashlightService.unlockBrightness()
+                flashlightService.setBrightness(previousBrightness)
+                isSending = false
+                currentSendIndex = 0
+                currentSendElementIndex = nil
+                currentLoopCount = 0
+            }
+
             repeat {
                 currentLoopCount += 1
                 
@@ -157,23 +179,15 @@ class MorseCodeEngine: ObservableObject {
                 }
             } while loopSending && !Task.isCancelled
 
-            flashlightService.turnOff()
-            soundService.stop()
-            flashlightService.unlockBrightness()
-            flashlightService.setBrightness(previousBrightness)
+            if Task.isCancelled { return }
 
             let message = MorseMessage(
-                text: inputText,
-                morse: morseRepresentation,
+                text: messageText,
+                morse: messageMorse,
                 timestamp: Date(),
                 direction: .sent
             )
             sendHistory.insert(message, at: 0)
-
-            isSending = false
-            currentSendIndex = 0
-            currentSendElementIndex = nil
-            currentLoopCount = 0
         }
     }
 
@@ -191,7 +205,7 @@ class MorseCodeEngine: ObservableObject {
 
     func resetSending(using flashlightService: FlashlightService) {
         stopSending(using: flashlightService)
-        sendingSpeed = 5
+        sendingSpeed = 10
     }
 
     var sendProgress: Double {
@@ -1237,6 +1251,48 @@ class MorseCodeEngine: ObservableObject {
         
         detectorState = isReceiving ? .waitingForSignal : .idle
     }
+    
+    // MARK: - Initialization
+    
+    init() {
+        loadHistory()
+    }
+    
+    // MARK: - History Persistence
+    
+    private func loadHistory() {
+        if let data = UserDefaults.standard.data(forKey: Self.sendHistoryKey),
+           let decoded = try? JSONDecoder().decode([MorseMessage].self, from: data) {
+            sendHistory = decoded
+        }
+        
+        if let data = UserDefaults.standard.data(forKey: Self.receiveHistoryKey),
+           let decoded = try? JSONDecoder().decode([MorseMessage].self, from: data) {
+            receiveHistory = decoded
+        }
+    }
+    
+    private func saveSendHistory() {
+        let trimmedHistory = Array(sendHistory.prefix(Self.maxHistoryItems))
+        if let encoded = try? JSONEncoder().encode(trimmedHistory) {
+            UserDefaults.standard.set(encoded, forKey: Self.sendHistoryKey)
+        }
+    }
+    
+    private func saveReceiveHistory() {
+        let trimmedHistory = Array(receiveHistory.prefix(Self.maxHistoryItems))
+        if let encoded = try? JSONEncoder().encode(trimmedHistory) {
+            UserDefaults.standard.set(encoded, forKey: Self.receiveHistoryKey)
+        }
+    }
+    
+    func clearSendHistory() {
+        sendHistory = []
+    }
+    
+    func clearReceiveHistory() {
+        receiveHistory = []
+    }
 }
 
 // MARK: - Supporting Types
@@ -1253,16 +1309,24 @@ struct MorseSignal: Identifiable {
     }
 }
 
-struct MorseMessage: Identifiable {
-    let id = UUID()
+struct MorseMessage: Identifiable, Codable {
+    let id: UUID
     let text: String
     let morse: String
     let timestamp: Date
     let direction: Direction
 
-    enum Direction {
+    enum Direction: String, Codable {
         case sent
         case received
+    }
+    
+    init(text: String, morse: String, timestamp: Date, direction: Direction) {
+        self.id = UUID()
+        self.text = text
+        self.morse = morse
+        self.timestamp = timestamp
+        self.direction = direction
     }
 
     var formattedTime: String {

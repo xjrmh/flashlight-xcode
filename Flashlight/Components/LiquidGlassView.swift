@@ -125,19 +125,27 @@ struct LiquidGlassToggle: View {
     var size: CGFloat = 80
     var accentColor: Color = .white
     var shadowColor: Color = .white
+    
+    @State private var pressDepth: CGFloat = 0.0  // 0 = not pressed, 1 = fully pressed
 
     var body: some View {
+        let pressScale = 1.0 - (pressDepth * 0.12)
+        let innerShadowOpacity = pressDepth * 0.5
+        let outerShadowRadius = max(0, 20 - (pressDepth * 18))
+        let brightnessAdjust = -pressDepth * 0.15
+        
         Button {
             withAnimation(.spring(response: 0.35, dampingFraction: 0.7)) {
                 isOn.toggle()
             }
         } label: {
             ZStack {
-                // Outer ring
+                // Outer ring - base layer
                 Circle()
                     .fill(.ultraThinMaterial)
                     .frame(width: size, height: size)
 
+                // Main fill with gradient
                 Circle()
                     .fill(
                         RadialGradient(
@@ -147,6 +155,22 @@ struct LiquidGlassToggle: View {
                             center: .center,
                             startRadius: 0,
                             endRadius: size / 2
+                        )
+                    )
+                    .frame(width: size, height: size)
+                
+                // Inner shadow overlay for pressed depth effect
+                Circle()
+                    .fill(
+                        RadialGradient(
+                            colors: [
+                                Color.black.opacity(innerShadowOpacity * 0.6),
+                                Color.black.opacity(innerShadowOpacity * 0.3),
+                                Color.clear
+                            ],
+                            center: .top,
+                            startRadius: 0,
+                            endRadius: size * 0.7
                         )
                     )
                     .frame(width: size, height: size)
@@ -170,10 +194,35 @@ struct LiquidGlassToggle: View {
                 Image(systemName: "power")
                     .font(.system(size: size * 0.35, weight: .medium))
                     .foregroundStyle(isOn ? .black : .white.opacity(0.7))
+                    .scaleEffect(1.0 - (pressDepth * 0.08))
             }
+            .brightness(brightnessAdjust)
+            .scaleEffect(pressScale)
         }
-        .buttonStyle(HapticButtonStyle())
-        .shadow(color: isOn ? shadowColor.opacity(0.4) : .clear, radius: 20)
+        .buttonStyle(PressableButtonStyle(pressDepth: $pressDepth))
+        .shadow(color: isOn ? shadowColor.opacity(0.4 * (1 - pressDepth)) : .clear, radius: outerShadowRadius)
+    }
+}
+
+// MARK: - Pressable Button Style
+
+struct PressableButtonStyle: ButtonStyle {
+    @Binding var pressDepth: CGFloat
+    
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .onChange(of: configuration.isPressed) { _, isPressed in
+                if isPressed {
+                    withAnimation(.easeOut(duration: 0.08)) {
+                        pressDepth = 0.4
+                    }
+                    HapticFeedback.impact(.light)
+                } else {
+                    withAnimation(.spring(response: 0.25, dampingFraction: 0.5)) {
+                        pressDepth = 0.0
+                    }
+                }
+            }
     }
 }
 

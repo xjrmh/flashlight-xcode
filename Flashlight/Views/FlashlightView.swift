@@ -403,14 +403,12 @@ struct FlashlightView: View {
                         .tint(.cyan)
                         .onChange(of: timerSliderValue) { _, _ in
                             HapticFeedback.selectionChanged()
-                            if timerDuration > 0 {
-                                if flashlight.isOn {
+                            if flashlight.isOn {
+                                if timerDuration > 0 {
                                     startTimer()
                                 } else {
-                                    flashlight.turnOn()
+                                    stopTimer()
                                 }
-                            } else {
-                                stopTimer()
                             }
                         }
                     
@@ -437,13 +435,13 @@ struct FlashlightView: View {
                 // Quick presets
                 HStack(spacing: 12) {
                     PresetButton(
-                        title: "Low",
-                        icon: "sun.min.fill",
-                        isSelected: isPresetSelected(0.25)
+                        title: "Moonlight",
+                        icon: "moon.fill",
+                        isSelected: isPresetSelected(0.01)
                     ) {
                         exitStrobeIfNeeded()
                         withAnimation {
-                            flashlight.brightness = 0.25
+                            flashlight.brightness = 0.01
                             flashlight.turnOn()
                         }
                     }
