@@ -1,4 +1,5 @@
 import SwiftUI
+import AVFoundation
 
 struct MorseReceiveView: View {
     @EnvironmentObject var morseEngine: MorseCodeEngine
@@ -6,6 +7,8 @@ struct MorseReceiveView: View {
 
     @State private var showHistory = false
     @State private var showSettings = false
+
+    private let roiOverlaySize: CGFloat = 80
 
     var body: some View {
         ZStack {
@@ -15,41 +18,72 @@ struct MorseReceiveView: View {
                 let isCompact = geometry.size.width < 600
 
                 if isCompact {
-                    VStack(spacing: 20) {
+                    VStack(spacing: 0) {
                         headerSection
-                        cameraPreviewSection
-                        signalIndicator
-                        decodedSection
-                        controlsSection
-                        if showHistory { historySection }
-                    }
-                    .padding(20)
-                } else {
-                    HStack(alignment: .top, spacing: 24) {
-                        VStack(spacing: 20) {
-                            headerSection
-                            cameraPreviewSection
-                            signalIndicator
-                        }
-                        .frame(maxWidth: .infinity)
+                            .padding(.horizontal, 20)
+                            .padding(.top, 20)
+                            .padding(.bottom, 12)
 
-                        VStack(spacing: 20) {
-                            decodedSection
-                            settingsSection
-                            controlsSection
-                            if showHistory { historySection }
+                        cameraPreviewSection
+                            .padding(.horizontal, 20)
+                            .padding(.bottom, 12)
+
+                        ScrollView {
+                            VStack(spacing: 20) {
+                                signalIndicator
+                                decodedSection
+                                controlsSection
+                                settingsSection
+                            }
+                            .padding(.horizontal, 20)
+                            .padding(.bottom, 20)
                         }
-                        .frame(maxWidth: .infinity)
                     }
-                    .padding(32)
+                } else {
+                    VStack(spacing: 0) {
+                        headerSection
+                            .padding(.horizontal, 32)
+                            .padding(.top, 24)
+                            .padding(.bottom, 12)
+
+                        HStack(alignment: .top, spacing: 24) {
+                            VStack(spacing: 20) {
+                                cameraPreviewSection
+                                signalIndicator
+                            }
+                            .frame(maxWidth: .infinity)
+
+                            ScrollView {
+                                VStack(spacing: 20) {
+                                    decodedSection
+                                    controlsSection
+                                    settingsSection
+                                }
+                                .frame(maxWidth: .infinity, alignment: .top)
+                                .padding(.bottom, 32)
+                            }
+                            .frame(maxWidth: .infinity)
+                        }
+                        .padding(.horizontal, 32)
+                        .padding(.bottom, 32)
+                    }
                 }
             }
+        }
+        .sheet(isPresented: $showHistory) {
+            ReceiveHistorySheet(history: morseEngine.receiveHistory)
         }
         .onAppear {
             cameraDetector.setupCamera()
             cameraDetector.onBrightnessUpdate = { brightness in
                 morseEngine.updateLightLevel(brightness)
             }
+            // Start detecting by default
+            cameraDetector.start()
+            morseEngine.startReceiving()
+        }
+        .onChange(of: morseEngine.dedicatedSourceMode) { _, _ in
+            morseEngine.resetReceivingState()
         }
         .onDisappear {
             cameraDetector.stop()
@@ -110,7 +144,28 @@ struct MorseReceiveView: View {
                         .strokeBorder(Color.white.opacity(0.2), lineWidth: 0.5)
                 )
 
-            // ROI overlay
+            // Dimming overlay with cutout for center detection area (when active)
+            if morseEngine.isReceiving {
+                Canvas { context, size in
+                    // Fill entire area with semi-transparent black
+                    let fullRect = CGRect(origin: .zero, size: size)
+                    context.fill(Path(roundedRect: fullRect, cornerRadius: 20), with: .color(.black.opacity(0.6)))
+                    
+                    // Cut out the center square
+                    let centerSize: CGFloat = 80
+                    let centerRect = CGRect(
+                        x: (size.width - centerSize) / 2,
+                        y: (size.height - centerSize) / 2,
+                        width: centerSize,
+                        height: centerSize
+                    )
+                    context.blendMode = .destinationOut
+                    context.fill(Path(roundedRect: centerRect, cornerRadius: 8), with: .color(.white))
+                }
+                .allowsHitTesting(false)
+            }
+
+            // ROI overlay border
             VStack {
                 Spacer()
                 HStack {
@@ -118,33 +173,38 @@ struct MorseReceiveView: View {
                     RoundedRectangle(cornerRadius: 8)
                         .strokeBorder(
                             morseEngine.lightDetected ? Color.green : Color.white.opacity(0.4),
-                            style: StrokeStyle(lineWidth: 2, dash: [8, 4])
+                            style: StrokeStyle(lineWidth: 2, dash: morseEngine.isReceiving ? [] : [8, 4])
                         )
-                        .frame(width: 80, height: 80)
+                        .frame(width: roiOverlaySize, height: roiOverlaySize)
                         .background(
                             RoundedRectangle(cornerRadius: 8)
-                                .fill(morseEngine.lightDetected ? Color.green.opacity(0.1) : Color.clear)
+                                .fill(morseEngine.lightDetected ? Color.green.opacity(0.15) : Color.clear)
                         )
                     Spacer()
                 }
                 Spacer()
             }
 
-            // Status overlay
-            if !cameraDetector.isRunning && !morseEngine.isReceiving {
+            GeometryReader { proxy in
+                Color.clear
+                    .onAppear {
+                        updateRoiSize(using: proxy.size)
+                    }
+                    .onChange(of: proxy.size) { _, newSize in
+                        updateRoiSize(using: newSize)
+                    }
+            }
+            .allowsHitTesting(false)
+
+            // Status overlay when not receiving
+            if !morseEngine.isReceiving {
                 ZStack {
                     RoundedRectangle(cornerRadius: 20)
                         .fill(.black.opacity(0.7))
 
-                    VStack(spacing: 12) {
-                        Image(systemName: "camera.fill")
-                            .font(.system(size: 36))
-                            .foregroundStyle(.white.opacity(0.4))
-
-                        Text("Tap Start to begin detecting")
-                            .font(.system(size: 14))
-                            .foregroundStyle(.white.opacity(0.4))
-                    }
+                    Image(systemName: "camera.fill")
+                        .font(.system(size: 36))
+                        .foregroundStyle(.white.opacity(0.4))
                 }
             }
         }
@@ -166,12 +226,12 @@ struct MorseReceiveView: View {
 
                     HStack(spacing: 4) {
                         Circle()
-                            .fill(morseEngine.lightDetected ? .green : .red.opacity(0.5))
+                            .fill(signalStatusColor)
                             .frame(width: 8, height: 8)
 
-                        Text(morseEngine.lightDetected ? "LIGHT DETECTED" : "NO SIGNAL")
+                        Text(signalStatusText)
                             .font(.system(size: 11, weight: .bold, design: .monospaced))
-                            .foregroundStyle(morseEngine.lightDetected ? .green : .white.opacity(0.4))
+                            .foregroundStyle(signalStatusColor)
                     }
                 }
 
@@ -233,6 +293,26 @@ struct MorseReceiveView: View {
         }
         return [.orange.opacity(0.4), .orange.opacity(0.6)]
     }
+    
+    private var signalStatusText: String {
+        if !morseEngine.isReceiving {
+            return "READY"
+        }
+        if morseEngine.dedicatedSourceMode && !morseEngine.preambleDetected {
+            return morseEngine.lightDetected ? "SEARCHING SYNC..." : "WAITING FOR SYNC"
+        }
+        return morseEngine.lightDetected ? "LIGHT DETECTED" : "NO SIGNAL"
+    }
+    
+    private var signalStatusColor: Color {
+        if !morseEngine.isReceiving {
+            return .white.opacity(0.4)
+        }
+        if morseEngine.dedicatedSourceMode && !morseEngine.preambleDetected {
+            return morseEngine.lightDetected ? .orange : .yellow.opacity(0.6)
+        }
+        return morseEngine.lightDetected ? .green : .red.opacity(0.5)
+    }
 
     // MARK: - Decoded Section
 
@@ -255,6 +335,7 @@ struct MorseReceiveView: View {
                                 .font(.system(size: 12))
                                 .foregroundStyle(.white.opacity(0.4))
                         }
+                        .buttonStyle(HapticButtonStyle())
                     }
                 }
 
@@ -288,33 +369,86 @@ struct MorseReceiveView: View {
     // MARK: - Settings
 
     private var settingsSection: some View {
-        Group {
-            if showSettings {
-                LiquidGlassCard(cornerRadius: 20, padding: 16) {
-                    VStack(spacing: 16) {
-                        LiquidGlassSlider(
-                            value: $morseEngine.detectionThreshold,
-                            range: 0.1...0.9,
-                            label: "Detection Threshold",
-                            icon: "waveform.path",
-                            accentColor: .green
-                        )
-
-                        LiquidGlassSlider(
-                            value: $morseEngine.sendingSpeed,
-                            range: 5...30,
-                            label: "Expected Speed (WPM)",
-                            icon: "gauge.medium",
-                            accentColor: .orange,
-                            showPercentage: false
-                        )
+        LiquidGlassCard(cornerRadius: 20, padding: 16) {
+            VStack(spacing: 16) {
+                // Source mode toggle (always visible)
+                HStack {
+                    Image(systemName: morseEngine.dedicatedSourceMode ? "antenna.radiowaves.left.and.right" : "light.max")
+                        .font(.system(size: 16))
+                        .foregroundStyle(morseEngine.dedicatedSourceMode ? .cyan : .white.opacity(0.6))
+                        .frame(width: 24)
+                    
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(morseEngine.dedicatedSourceMode ? "Dedicated Source" : "All Light Sources")
+                            .font(.system(size: 14, weight: .medium))
+                            .foregroundStyle(.white)
+                        
+                        Text(morseEngine.dedicatedSourceMode ? "Waits for sync pattern" : "Decodes any flashing light")
+                            .font(.system(size: 11))
+                            .foregroundStyle(.white.opacity(0.4))
                     }
+                    
+                    Spacer()
+                    
+                    Toggle("", isOn: $morseEngine.dedicatedSourceMode)
+                        .labelsHidden()
+                        .tint(.cyan)
+                }
+
+                if showSettings {
+                    Divider().background(Color.white.opacity(0.1))
+
+                    HStack {
+                        Image(systemName: "waveform.path.ecg")
+                            .font(.system(size: 16))
+                            .foregroundStyle(morseEngine.autoSensitivity ? .green : .white.opacity(0.6))
+                            .frame(width: 24)
+
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("Auto Sensitivity")
+                                .font(.system(size: 14, weight: .medium))
+                                .foregroundStyle(.white)
+
+                            Text("Keeps threshold within your range")
+                                .font(.system(size: 11))
+                                .foregroundStyle(.white.opacity(0.4))
+                        }
+
+                        Spacer()
+
+                        Toggle("", isOn: $morseEngine.autoSensitivity)
+                            .labelsHidden()
+                            .tint(.green)
+                    }
+
+                    LiquidGlassSlider(
+                        value: $morseEngine.detectionThreshold,
+                        range: 0.1...0.9,
+                        label: "Detection Threshold",
+                        icon: "waveform.path",
+                        accentColor: .green
+                    )
+
+                    LiquidGlassSlider(
+                        value: $morseEngine.sendingSpeed,
+                        range: 5...30,
+                        label: "Expected Speed (WPM)",
+                        icon: "gauge.medium",
+                        accentColor: .orange,
+                        showPercentage: false
+                    )
                 }
             }
         }
     }
 
     // MARK: - Controls
+
+    private func updateRoiSize(using size: CGSize) {
+        let minSide = max(1, min(size.width, size.height))
+        let fraction = max(0.05, min(0.9, roiOverlaySize / minSide))
+        cameraDetector.roiSize = fraction
+    }
 
     private var controlsSection: some View {
         HStack(spacing: 12) {
@@ -343,7 +477,7 @@ struct MorseReceiveView: View {
                         .fill(morseEngine.isReceiving ? .red.opacity(0.8) : .white)
                 )
             }
-            .buttonStyle(.plain)
+            .buttonStyle(HapticButtonStyle())
 
             // Clear
             if !morseEngine.detectedMorse.isEmpty {
@@ -363,79 +497,106 @@ struct MorseReceiveView: View {
                                 )
                         )
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(HapticButtonStyle())
             }
         }
     }
 
-    // MARK: - History
-
-    private var historySection: some View {
-        LiquidGlassCard(cornerRadius: 20, padding: 16) {
-            VStack(alignment: .leading, spacing: 12) {
-                Text("RECEIVE HISTORY")
-                    .font(.system(size: 11, weight: .bold))
-                    .tracking(2)
-                    .foregroundStyle(.white.opacity(0.4))
-
-                if morseEngine.receiveHistory.isEmpty {
-                    Text("No messages received yet")
-                        .font(.system(size: 14))
-                        .foregroundStyle(.white.opacity(0.3))
-                        .padding(.vertical, 8)
-                } else {
-                    ForEach(morseEngine.receiveHistory) { message in
-                        HStack {
-                            VStack(alignment: .leading, spacing: 4) {
-                                Text(message.text)
-                                    .font(.system(size: 15, weight: .medium))
-                                    .foregroundStyle(.white)
-
-                                Text(message.morse)
-                                    .font(.system(size: 11, design: .monospaced))
-                                    .foregroundStyle(.green.opacity(0.5))
-                                    .lineLimit(1)
-                            }
-                            Spacer()
-                            Text(message.formattedTime)
-                                .font(.system(size: 12))
-                                .foregroundStyle(.white.opacity(0.3))
-                        }
-                        .padding(.vertical, 6)
-
-                        if message.id != morseEngine.receiveHistory.last?.id {
-                            Divider().background(Color.white.opacity(0.05))
-                        }
-                    }
-                }
-            }
-        }
-    }
 }
 
 // MARK: - Camera Preview UIKit Bridge
 
 struct CameraPreviewView: UIViewRepresentable {
-    let detector: CameraLightDetector
+    @ObservedObject var detector: CameraLightDetector
 
-    func makeUIView(context: Context) -> UIView {
-        let view = UIView(frame: .zero)
+    func makeUIView(context: Context) -> CameraPreviewUIView {
+        let view = CameraPreviewUIView()
         view.backgroundColor = .black
-
-        if let previewLayer = detector.previewLayer {
-            previewLayer.frame = view.bounds
-            view.layer.addSublayer(previewLayer)
-        }
-
         return view
     }
 
-    func updateUIView(_ uiView: UIView, context: Context) {
+    func updateUIView(_ uiView: CameraPreviewUIView, context: Context) {
         if let previewLayer = detector.previewLayer {
-            previewLayer.frame = uiView.bounds
-            if previewLayer.superlayer == nil {
-                uiView.layer.addSublayer(previewLayer)
+            uiView.setPreviewLayer(previewLayer)
+        }
+    }
+}
+
+class CameraPreviewUIView: UIView {
+    private var previewLayer: AVCaptureVideoPreviewLayer?
+    
+    func setPreviewLayer(_ layer: AVCaptureVideoPreviewLayer) {
+        // Only add if not already added
+        if previewLayer !== layer {
+            previewLayer?.removeFromSuperlayer()
+            previewLayer = layer
+            layer.frame = bounds
+            layer.videoGravity = .resizeAspectFill
+            self.layer.addSublayer(layer)
+        }
+    }
+    
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        previewLayer?.frame = bounds
+    }
+}
+
+// MARK: - Receive History Sheet
+
+struct ReceiveHistorySheet: View {
+    @Environment(\.dismiss) var dismiss
+    let history: [MorseMessage]
+
+    var body: some View {
+        NavigationStack {
+            ZStack {
+                Color.black.ignoresSafeArea()
+
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 12) {
+                        if history.isEmpty {
+                            Text("No messages received yet")
+                                .font(.system(size: 14))
+                                .foregroundStyle(.white.opacity(0.3))
+                                .frame(maxWidth: .infinity, alignment: .center)
+                                .padding(.vertical, 40)
+                        } else {
+                            ForEach(history) { message in
+                                LiquidGlassCard(cornerRadius: 16, padding: 14) {
+                                    VStack(alignment: .leading, spacing: 8) {
+                                        HStack {
+                                            Text(message.text)
+                                                .font(.system(size: 16, weight: .medium))
+                                                .foregroundStyle(.white)
+                                            Spacer()
+                                            Text(message.formattedTime)
+                                                .font(.system(size: 12))
+                                                .foregroundStyle(.white.opacity(0.3))
+                                        }
+
+                                        Text(message.morse)
+                                            .font(.system(size: 12, design: .monospaced))
+                                            .foregroundStyle(.green.opacity(0.6))
+                                            .lineLimit(2)
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    .padding(20)
+                }
             }
+            .navigationTitle("Receive History")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button("Done") { dismiss() }
+                        .foregroundStyle(.cyan)
+                        .buttonStyle(HapticButtonStyle())
+                }
+            }
+            .toolbarColorScheme(.dark, for: .navigationBar)
         }
     }
 }

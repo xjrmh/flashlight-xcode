@@ -1,0 +1,33 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <rect width="1024" height="1024" fill="#2F2F2F"/>
+  <!-- Flashlight beam expanded to ~2/3 height -->
+  <polygon points="0,300 1024,0 1024,680" fill="#FFFFFF"/>
+
+  <g fill="#FFFFFF">
+    <!-- Morse row 1 -->
+    <g transform="translate(88 760)">
+      <circle cx="26"  cy="26" r="26"/>
+      <circle cx="100" cy="26" r="26"/>
+      <circle cx="174" cy="26" r="26"/>
+      <rect x="222" y="0" width="120" height="52" rx="26"/>
+      <rect x="364" y="0" width="120" height="52" rx="26"/>
+      <rect x="506" y="0" width="120" height="52" rx="26"/>
+      <circle cx="674" cy="26" r="26"/>
+      <circle cx="748" cy="26" r="26"/>
+      <circle cx="822" cy="26" r="26"/>
+    </g>
+
+    <!-- Morse row 2 (receive/echo) -->
+    <g opacity="0.55" transform="translate(148 880)">
+      <circle cx="26"  cy="26" r="26"/>
+      <circle cx="100" cy="26" r="26"/>
+      <circle cx="174" cy="26" r="26"/>
+      <rect x="222" y="0" width="120" height="52" rx="26"/>
+      <rect x="364" y="0" width="120" height="52" rx="26"/>
+      <rect x="506" y="0" width="120" height="52" rx="26"/>
+      <circle cx="674" cy="26" r="26"/>
+      <circle cx="748" cy="26" r="26"/>
+      <circle cx="822" cy="26" r="26"/>
+    </g>
+  </g>
+</svg>

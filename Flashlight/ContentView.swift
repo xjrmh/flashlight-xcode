@@ -38,6 +38,9 @@ struct ContentView: View {
                 .tag(AppTab.morseReceive)
         }
         .tint(.white)
+        .onChange(of: selectedTab) { _, _ in
+            HapticFeedback.selectionChanged()
+        }
     }
 }
 

@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 
 // MARK: - Liquid Glass Background Modifier
 
@@ -113,7 +114,7 @@ struct LiquidGlassButton: View {
                 }
             )
         }
-        .buttonStyle(.plain)
+        .buttonStyle(HapticButtonStyle())
     }
 }
 
@@ -122,6 +123,8 @@ struct LiquidGlassButton: View {
 struct LiquidGlassToggle: View {
     @Binding var isOn: Bool
     var size: CGFloat = 80
+    var accentColor: Color = .white
+    var shadowColor: Color = .white
 
     var body: some View {
         Button {
@@ -139,7 +142,7 @@ struct LiquidGlassToggle: View {
                     .fill(
                         RadialGradient(
                             colors: isOn
-                                ? [Color.white.opacity(0.9), Color.white.opacity(0.3)]
+                                ? [accentColor.opacity(0.9), accentColor.opacity(0.3)]
                                 : [Color.white.opacity(0.15), Color.white.opacity(0.05)],
                             center: .center,
                             startRadius: 0,
@@ -153,8 +156,8 @@ struct LiquidGlassToggle: View {
                     .strokeBorder(
                         LinearGradient(
                             colors: [
-                                Color.white.opacity(isOn ? 0.8 : 0.3),
-                                Color.white.opacity(isOn ? 0.3 : 0.1),
+                                accentColor.opacity(isOn ? 0.8 : 0.3),
+                                accentColor.opacity(isOn ? 0.3 : 0.1),
                             ],
                             startPoint: .topLeading,
                             endPoint: .bottomTrailing
@@ -169,8 +172,8 @@ struct LiquidGlassToggle: View {
                     .foregroundStyle(isOn ? .black : .white.opacity(0.7))
             }
         }
-        .buttonStyle(.plain)
-        .shadow(color: isOn ? .white.opacity(0.4) : .clear, radius: 20)
+        .buttonStyle(HapticButtonStyle())
+        .shadow(color: isOn ? shadowColor.opacity(0.4) : .clear, radius: 20)
     }
 }
 
@@ -183,6 +186,7 @@ struct LiquidGlassSlider: View {
     var icon: String
     var accentColor: Color = .white
     var showPercentage: Bool = true
+    @State private var lastHapticStep: Int = -1
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -248,11 +252,45 @@ struct LiquidGlassSlider: View {
                         .onChanged { gesture in
                             let fraction = max(0, min(1, Double(gesture.location.x / width)))
                             value = range.lowerBound + fraction * (range.upperBound - range.lowerBound)
+                            let step = Int((fraction * 100.0) / 2.0)
+                            if step != lastHapticStep {
+                                lastHapticStep = step
+                                HapticFeedback.selectionChanged()
+                            }
                         }
                 )
             }
             .frame(height: 22)
         }
+    }
+}
+
+// MARK: - Haptics
+
+enum HapticFeedback {
+    static func impact(_ style: UIImpactFeedbackGenerator.FeedbackStyle = .light) {
+        let generator = UIImpactFeedbackGenerator(style: style)
+        generator.prepare()
+        generator.impactOccurred()
+    }
+
+    static func selectionChanged() {
+        let generator = UISelectionFeedbackGenerator()
+        generator.prepare()
+        generator.selectionChanged()
+    }
+}
+
+struct HapticButtonStyle: ButtonStyle {
+    var style: UIImpactFeedbackGenerator.FeedbackStyle = .light
+
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .onChange(of: configuration.isPressed) { _, isPressed in
+                if isPressed {
+                    HapticFeedback.impact(style)
+                }
+            }
     }
 }
 

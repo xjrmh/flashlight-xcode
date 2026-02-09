@@ -64,6 +64,7 @@ struct MorseReferenceSheet: View {
                 ToolbarItem(placement: .topBarTrailing) {
                     Button("Done") { dismiss() }
                         .foregroundStyle(.cyan)
+                        .buttonStyle(HapticButtonStyle())
                 }
             }
             .toolbarColorScheme(.dark, for: .navigationBar)

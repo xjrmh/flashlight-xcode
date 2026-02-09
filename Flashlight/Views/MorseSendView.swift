@@ -10,42 +10,61 @@ struct MorseSendView: View {
         ZStack {
             // Background
             Color.black.ignoresSafeArea()
+                .onTapGesture {
+                    UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
+                }
 
             GeometryReader { geometry in
                 let isCompact = geometry.size.width < 600
 
-                ScrollView {
-                    if isCompact {
-                        VStack(spacing: 24) {
-                            headerSection
-                            inputSection
-                            morsePreviewSection
-                            speedControlSection
-                            sendControlSection
-                            if showHistory { historySection }
-                        }
-                        .padding(20)
-                    } else {
-                        // iPad: side-by-side
-                        HStack(alignment: .top, spacing: 24) {
+                if isCompact {
+                    VStack(spacing: 0) {
+                        headerSection
+                            .padding(.horizontal, 20)
+                            .padding(.top, 20)
+                            .padding(.bottom, 12)
+
+                        ScrollView {
                             VStack(spacing: 24) {
-                                headerSection
                                 inputSection
                                 morsePreviewSection
-                            }
-                            .frame(maxWidth: .infinity)
-
-                            VStack(spacing: 24) {
                                 speedControlSection
                                 sendControlSection
-                                if showHistory { historySection }
                             }
-                            .frame(maxWidth: .infinity)
+                            .padding(.horizontal, 20)
+                            .padding(.bottom, 20)
                         }
-                        .padding(32)
+                    }
+                } else {
+                    VStack(spacing: 0) {
+                        headerSection
+                            .padding(.horizontal, 32)
+                            .padding(.top, 24)
+                            .padding(.bottom, 12)
+
+                        ScrollView {
+                            HStack(alignment: .top, spacing: 24) {
+                                VStack(spacing: 24) {
+                                    inputSection
+                                    morsePreviewSection
+                                }
+                                .frame(maxWidth: .infinity)
+
+                                VStack(spacing: 24) {
+                                    speedControlSection
+                                    sendControlSection
+                                }
+                                .frame(maxWidth: .infinity)
+                            }
+                            .padding(.horizontal, 32)
+                            .padding(.bottom, 32)
+                        }
                     }
                 }
             }
+        }
+        .sheet(isPresented: $showHistory) {
+            SendHistorySheet(history: morseEngine.sendHistory)
         }
     }
 
@@ -66,7 +85,7 @@ struct MorseSendView: View {
             Spacer()
 
             LiquidGlassButton(
-                title: "History",
+                title: nil,
                 icon: "clock.arrow.circlepath",
                 isActive: showHistory
             ) {
@@ -87,11 +106,16 @@ struct MorseSendView: View {
                     .tracking(2)
                     .foregroundStyle(.white.opacity(0.4))
 
-                TextField("Enter text to send...", text: $morseEngine.inputText, axis: .vertical)
-                    .font(.system(size: 18, weight: .medium))
+                TextField("Enter text to send...", text: $morseEngine.inputText)
+                    .font(.system(size: 16, weight: .medium))
                     .foregroundStyle(.white)
                     .tint(.cyan)
-                    .lineLimit(4)
+                    .submitLabel(.send)
+                    .onSubmit {
+                        if !morseEngine.inputText.isEmpty && !morseEngine.isSending {
+                            morseEngine.startSending(using: flashlight)
+                        }
+                    }
                     .onChange(of: morseEngine.inputText) { _, _ in
                         morseEngine.updateMorseRepresentation()
                     }
@@ -101,7 +125,7 @@ struct MorseSendView: View {
                 HStack {
                     Spacer()
                     Text("\(morseEngine.inputText.count) characters")
-                        .font(.system(size: 12, design: .monospaced))
+                        .font(.system(size: 13, design: .monospaced))
                         .foregroundStyle(.white.opacity(0.3))
                 }
             }
@@ -121,31 +145,32 @@ struct MorseSendView: View {
 
                     Spacer()
 
-                    if !morseEngine.morseRepresentation.isEmpty {
+                    if !morseEngine.sendingMorseRepresentation.isEmpty {
                         Button {
-                            UIPasteboard.general.string = morseEngine.morseRepresentation
+                            UIPasteboard.general.string = morseEngine.sendingMorseRepresentation
                         } label: {
                             Image(systemName: "doc.on.doc")
                                 .font(.system(size: 12))
                                 .foregroundStyle(.white.opacity(0.4))
                         }
+                        .buttonStyle(HapticButtonStyle())
                     }
                 }
 
-                if morseEngine.morseRepresentation.isEmpty {
+                if morseEngine.sendingMorseRepresentation.isEmpty {
                     Text("Type a message above to see morse code")
                         .font(.system(size: 14))
                         .foregroundStyle(.white.opacity(0.3))
                 } else {
                     // Visual morse display
                     MorseVisualizer(
-                        morse: morseEngine.morseRepresentation,
-                        currentIndex: morseEngine.isSending ? morseEngine.currentSendIndex : nil
+                        morse: morseEngine.sendingMorseRepresentation,
+                        highlightedIndex: morseEngine.isSending ? morseEngine.currentSendElementIndex : nil
                     )
 
                     // Text morse display
-                    Text(morseEngine.morseRepresentation)
-                        .font(.system(size: 16, weight: .medium, design: .monospaced))
+                    Text(morseEngine.sendingMorseRepresentation)
+                        .font(.system(size: 14, weight: .medium, design: .monospaced))
                         .foregroundStyle(.cyan.opacity(0.8))
                         .textSelection(.enabled)
                 }
@@ -169,14 +194,99 @@ struct MorseSendView: View {
 
                 HStack {
                     Text("\(Int(morseEngine.sendingSpeed)) WPM")
-                        .font(.system(size: 14, weight: .semibold, design: .monospaced))
+                        .font(.system(size: 13, weight: .semibold, design: .monospaced))
                         .foregroundStyle(.orange)
 
                     Spacer()
 
                     Text(speedLabel)
-                        .font(.system(size: 12))
+                        .font(.system(size: 13))
                         .foregroundStyle(.white.opacity(0.4))
+                }
+                
+                Divider().background(Color.white.opacity(0.1))
+                
+                // Sound toggle
+                HStack {
+                    Image(systemName: "speaker.wave.2.fill")
+                        .font(.system(size: 14))
+                        .foregroundStyle(morseEngine.sendWithSound ? .cyan : .white.opacity(0.6))
+                        .frame(width: 24)
+                    
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Send With Sound")
+                            .font(.system(size: 14, weight: .medium))
+                            .foregroundStyle(.white)
+                        
+                        Text(morseEngine.sendWithSound ? "Plays a tone while flashing" : "Light only")
+                            .font(.system(size: 11))
+                            .foregroundStyle(.white.opacity(0.4))
+                    }
+                    
+                    Spacer()
+                    
+                    Toggle("", isOn: $morseEngine.sendWithSound)
+                        .labelsHidden()
+                        .tint(.cyan)
+                }
+                
+                Divider().background(Color.white.opacity(0.1))
+
+                // Prefix toggle
+                HStack {
+                    Image(systemName: "dot.radiowaves.left.and.right")
+                        .font(.system(size: 14))
+                        .foregroundStyle(morseEngine.sendWithPreamble ? .cyan : .white.opacity(0.6))
+                        .frame(width: 24)
+
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Send With Prefix")
+                            .font(.system(size: 14, weight: .medium))
+                            .foregroundStyle(.white)
+
+                        Text(morseEngine.sendWithPreamble ? "Adds sync pattern before message" : "No sync pattern")
+                            .font(.system(size: 11))
+                            .foregroundStyle(.white.opacity(0.4))
+                    }
+
+                    Spacer()
+
+                    Toggle("", isOn: $morseEngine.sendWithPreamble)
+                        .labelsHidden()
+                        .tint(.cyan)
+                }
+
+                Divider().background(Color.white.opacity(0.1))
+
+                // Loop toggle
+                HStack {
+                    Image(systemName: "repeat")
+                        .font(.system(size: 14))
+                        .foregroundStyle(morseEngine.loopSending ? .cyan : .white.opacity(0.6))
+                        .frame(width: 24)
+
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Loop Message")
+                            .font(.system(size: 14, weight: .medium))
+                            .foregroundStyle(.white)
+
+                        Text(morseEngine.loopSending ? "Repeats until stopped" : "Send once")
+                            .font(.system(size: 11))
+                            .foregroundStyle(.white.opacity(0.4))
+                    }
+
+                    Spacer()
+
+                    if morseEngine.isSending && morseEngine.loopSending {
+                        Text("×\(morseEngine.currentLoopCount)")
+                            .font(.system(size: 12, weight: .semibold, design: .monospaced))
+                            .foregroundStyle(.cyan)
+                            .padding(.trailing, 8)
+                    }
+
+                    Toggle("", isOn: $morseEngine.loopSending)
+                        .labelsHidden()
+                        .tint(.cyan)
                 }
             }
         }
@@ -265,53 +375,95 @@ struct MorseSendView: View {
                     }
                 )
             }
-            .buttonStyle(.plain)
+            .buttonStyle(HapticButtonStyle())
             .disabled(morseEngine.inputText.isEmpty && !morseEngine.isSending)
             .opacity(morseEngine.inputText.isEmpty && !morseEngine.isSending ? 0.4 : 1)
+
+            Button {
+                morseEngine.resetSending(using: flashlight)
+            } label: {
+                HStack(spacing: 8) {
+                    Image(systemName: "arrow.counterclockwise")
+                        .font(.system(size: 14, weight: .semibold))
+                    Text("Reset")
+                        .font(.system(size: 14, weight: .semibold))
+                    Text("Recommended before transmitting")
+                        .font(.system(size: 11))
+                        .foregroundStyle(.white.opacity(0.4))
+                }
+                .foregroundStyle(.white.opacity(0.8))
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 10)
+                .background(
+                    Capsule()
+                        .fill(.ultraThinMaterial)
+                        .overlay(
+                            Capsule()
+                                .strokeBorder(Color.white.opacity(0.1), lineWidth: 0.5)
+                        )
+                )
+            }
+            .buttonStyle(HapticButtonStyle())
         }
     }
 
-    // MARK: - History
+}
 
-    private var historySection: some View {
-        LiquidGlassCard(cornerRadius: 20, padding: 16) {
-            VStack(alignment: .leading, spacing: 12) {
-                Text("SEND HISTORY")
-                    .font(.system(size: 11, weight: .bold))
-                    .tracking(2)
-                    .foregroundStyle(.white.opacity(0.4))
+// MARK: - Send History Sheet
 
-                if morseEngine.sendHistory.isEmpty {
-                    Text("No messages sent yet")
-                        .font(.system(size: 14))
-                        .foregroundStyle(.white.opacity(0.3))
-                        .padding(.vertical, 8)
-                } else {
-                    ForEach(morseEngine.sendHistory) { message in
-                        HStack {
-                            VStack(alignment: .leading, spacing: 4) {
-                                Text(message.text)
-                                    .font(.system(size: 15, weight: .medium))
-                                    .foregroundStyle(.white)
+struct SendHistorySheet: View {
+    @Environment(\.dismiss) var dismiss
+    let history: [MorseMessage]
 
-                                Text(message.morse)
-                                    .font(.system(size: 11, design: .monospaced))
-                                    .foregroundStyle(.cyan.opacity(0.5))
-                                    .lineLimit(1)
-                            }
-                            Spacer()
-                            Text(message.formattedTime)
-                                .font(.system(size: 12))
+    var body: some View {
+        NavigationStack {
+            ZStack {
+                Color.black.ignoresSafeArea()
+
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 12) {
+                        if history.isEmpty {
+                            Text("No messages sent yet")
+                                .font(.system(size: 14))
                                 .foregroundStyle(.white.opacity(0.3))
-                        }
-                        .padding(.vertical, 6)
+                                .frame(maxWidth: .infinity, alignment: .center)
+                                .padding(.vertical, 40)
+                        } else {
+                            ForEach(history) { message in
+                                LiquidGlassCard(cornerRadius: 16, padding: 14) {
+                                    VStack(alignment: .leading, spacing: 8) {
+                                        HStack {
+                                            Text(message.text)
+                                                .font(.system(size: 16, weight: .medium))
+                                                .foregroundStyle(.white)
+                                            Spacer()
+                                            Text(message.formattedTime)
+                                                .font(.system(size: 12))
+                                                .foregroundStyle(.white.opacity(0.3))
+                                        }
 
-                        if message.id != morseEngine.sendHistory.last?.id {
-                            Divider().background(Color.white.opacity(0.05))
+                                        Text(message.morse)
+                                            .font(.system(size: 12, design: .monospaced))
+                                            .foregroundStyle(.cyan.opacity(0.6))
+                                            .lineLimit(2)
+                                    }
+                                }
+                            }
                         }
                     }
+                    .padding(20)
                 }
             }
+            .navigationTitle("Send History")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button("Done") { dismiss() }
+                        .foregroundStyle(.cyan)
+                        .buttonStyle(HapticButtonStyle())
+                }
+            }
+            .toolbarColorScheme(.dark, for: .navigationBar)
         }
     }
 }
@@ -320,7 +472,7 @@ struct MorseSendView: View {
 
 struct MorseVisualizer: View {
     let morse: String
-    var currentIndex: Int?
+    var highlightedIndex: Int?
 
     var body: some View {
         let elements = parseMorse()
@@ -328,7 +480,7 @@ struct MorseVisualizer: View {
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 3) {
                 ForEach(Array(elements.enumerated()), id: \.offset) { index, element in
-                    morseElement(element, isActive: index == (currentIndex ?? -1))
+                    morseElement(element, isActive: index == (highlightedIndex ?? -1))
                 }
             }
             .padding(.vertical, 8)
