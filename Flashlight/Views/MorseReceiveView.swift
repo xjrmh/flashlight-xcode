@@ -7,6 +7,7 @@ struct MorseReceiveView: View {
 
     @State private var showHistory = false
     @State private var showSettings = false
+    @State private var showPermissionAlert = false
 
     private let roiOverlaySize: CGFloat = 80
 
@@ -73,21 +74,41 @@ struct MorseReceiveView: View {
         .sheet(isPresented: $showHistory) {
             ReceiveHistorySheet(history: morseEngine.receiveHistory)
         }
-        .onAppear {
-            cameraDetector.setupCamera()
-            cameraDetector.onBrightnessUpdate = { brightness in
-                morseEngine.updateLightLevel(brightness)
+        .alert("Camera Access Required", isPresented: $showPermissionAlert) {
+            Button("Open Settings") {
+                if let url = URL(string: UIApplication.openSettingsURLString) {
+                    UIApplication.shared.open(url)
+                }
             }
-            // Start detecting by default
-            cameraDetector.start()
-            morseEngine.startReceiving()
+            Button("Cancel", role: .cancel) { }
+        } message: {
+            Text("Please enable camera access in Settings to detect morse code signals.")
+        }
+        .onAppear {
+            cameraDetector.checkPermission { granted in
+                if granted {
+                    cameraDetector.setupCamera()
+                    cameraDetector.onBrightnessUpdate = { brightness, timestamp in
+                        // Only send updates to engine when actively receiving
+                        if morseEngine.isReceiving {
+                            morseEngine.updateLightLevel(brightness, timestamp: timestamp)
+                        }
+                    }
+                    // Always start camera feed for preview (but not detection)
+                    cameraDetector.start()
+                } else if cameraDetector.permissionStatus == .denied {
+                    showPermissionAlert = true
+                }
+            }
         }
         .onChange(of: morseEngine.dedicatedSourceMode) { _, _ in
             morseEngine.resetReceivingState()
         }
         .onDisappear {
             cameraDetector.stop()
-            morseEngine.stopReceiving()
+            if morseEngine.isReceiving {
+                morseEngine.stopReceiving()
+            }
         }
     }
 
@@ -196,15 +217,43 @@ struct MorseReceiveView: View {
             }
             .allowsHitTesting(false)
 
-            // Status overlay when not receiving
-            if !morseEngine.isReceiving {
+            // Status overlay only when camera permission denied
+            if cameraDetector.permissionStatus == .denied {
                 ZStack {
                     RoundedRectangle(cornerRadius: 20)
                         .fill(.black.opacity(0.7))
 
-                    Image(systemName: "camera.fill")
-                        .font(.system(size: 36))
-                        .foregroundStyle(.white.opacity(0.4))
+                    VStack(spacing: 12) {
+                        Image(systemName: "camera.badge.ellipsis")
+                            .font(.system(size: 36))
+                            .foregroundStyle(.white.opacity(0.4))
+                        
+                        Text("Camera access denied")
+                            .font(.system(size: 14))
+                            .foregroundStyle(.white.opacity(0.5))
+                        
+                        Button("Open Settings") {
+                            if let url = URL(string: UIApplication.openSettingsURLString) {
+                                UIApplication.shared.open(url)
+                            }
+                        }
+                        .font(.system(size: 14, weight: .medium))
+                        .foregroundStyle(.cyan)
+                    }
+                }
+            }
+            
+            // "Ready" indicator when camera is on but not detecting
+            if cameraDetector.isRunning && !morseEngine.isReceiving && cameraDetector.permissionStatus == .authorized {
+                VStack {
+                    Spacer()
+                    Text("Position camera at light source")
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundStyle(.white.opacity(0.7))
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 6)
+                        .background(Capsule().fill(.black.opacity(0.5)))
+                        .padding(.bottom, 12)
                 }
             }
         }
@@ -267,6 +316,28 @@ struct MorseReceiveView: View {
                 }
                 .frame(height: 16)
 
+                // Detected WPM indicator (shown when we have data)
+                if morseEngine.detectedWPM > 0 {
+                    HStack {
+                        Image(systemName: "gauge.with.dots.needle.67percent")
+                            .font(.system(size: 12))
+                            .foregroundStyle(.orange.opacity(0.8))
+                        
+                        Text("\(Int(morseEngine.detectedWPM)) WPM")
+                            .font(.system(size: 12, weight: .semibold, design: .monospaced))
+                            .foregroundStyle(.orange)
+                        
+                        Text("•")
+                            .foregroundStyle(.white.opacity(0.3))
+                        
+                        Text(morseEngine.timingConfidence.rawValue)
+                            .font(.system(size: 11))
+                            .foregroundStyle(timingConfidenceColor)
+                        
+                        Spacer()
+                    }
+                }
+
                 // Recent signals visualization
                 if !morseEngine.receivedSignals.isEmpty {
                     ScrollView(.horizontal, showsIndicators: false) {
@@ -298,20 +369,80 @@ struct MorseReceiveView: View {
         if !morseEngine.isReceiving {
             return "READY"
         }
+        if cameraDetector.isCalibrating {
+            return "CALIBRATING..."
+        }
         if morseEngine.dedicatedSourceMode && !morseEngine.preambleDetected {
             return morseEngine.lightDetected ? "SEARCHING SYNC..." : "WAITING FOR SYNC"
         }
-        return morseEngine.lightDetected ? "LIGHT DETECTED" : "NO SIGNAL"
+        // Show signal quality when not detecting light
+        if !morseEngine.lightDetected {
+            return cameraDetector.signalQuality.rawValue.uppercased()
+        }
+        return "LIGHT DETECTED"
     }
     
     private var signalStatusColor: Color {
         if !morseEngine.isReceiving {
             return .white.opacity(0.4)
         }
+        if cameraDetector.isCalibrating {
+            return .yellow
+        }
         if morseEngine.dedicatedSourceMode && !morseEngine.preambleDetected {
             return morseEngine.lightDetected ? .orange : .yellow.opacity(0.6)
         }
-        return morseEngine.lightDetected ? .green : .red.opacity(0.5)
+        if morseEngine.lightDetected {
+            return .green
+        }
+        // Color based on signal quality
+        switch cameraDetector.signalQuality {
+        case .none: return .red.opacity(0.5)
+        case .weak: return .orange.opacity(0.6)
+        case .good: return .yellow
+        case .strong: return .green.opacity(0.7)
+        }
+    }
+    
+    private var timingConfidenceColor: Color {
+        switch morseEngine.timingConfidence {
+        case .learning: return .yellow.opacity(0.6)
+        case .low: return .orange.opacity(0.7)
+        case .medium: return .green.opacity(0.7)
+        case .high: return .green
+        }
+    }
+    
+    // MARK: - Button Styling
+    
+    private var buttonTitle: String {
+        if morseEngine.isProcessing {
+            return "Analyzing..."
+        } else if morseEngine.isReceiving {
+            return "Stop"
+        } else {
+            return "Start Detecting"
+        }
+    }
+    
+    private var buttonForegroundColor: Color {
+        if morseEngine.isProcessing {
+            return .white
+        } else if morseEngine.isReceiving {
+            return .white
+        } else {
+            return .black
+        }
+    }
+    
+    private var buttonBackgroundColor: Color {
+        if morseEngine.isProcessing {
+            return .orange.opacity(0.8)
+        } else if morseEngine.isReceiving {
+            return .red.opacity(0.8)
+        } else {
+            return .white
+        }
     }
 
     // MARK: - Decoded Section
@@ -319,27 +450,27 @@ struct MorseReceiveView: View {
     private var decodedSection: some View {
         LiquidGlassCard(cornerRadius: 20, padding: 16) {
             VStack(alignment: .leading, spacing: 12) {
+                // Morse code section
                 HStack {
-                    Text("DECODED MESSAGE")
+                    Text("MORSE CODE")
                         .font(.system(size: 11, weight: .bold))
                         .tracking(2)
                         .foregroundStyle(.white.opacity(0.4))
 
                     Spacer()
 
-                    if !morseEngine.decodedText.isEmpty {
+                    if !morseEngine.detectedMorse.isEmpty {
                         Button {
-                            UIPasteboard.general.string = morseEngine.decodedText
+                            UIPasteboard.general.string = morseEngine.detectedMorse
                         } label: {
                             Image(systemName: "doc.on.doc")
                                 .font(.system(size: 12))
-                                .foregroundStyle(.white.opacity(0.4))
+                                .foregroundStyle(.cyan.opacity(0.5))
                         }
                         .buttonStyle(HapticButtonStyle())
                     }
                 }
 
-                // Morse code raw
                 if morseEngine.detectedMorse.isEmpty {
                     Text("Waiting for signal...")
                         .font(.system(size: 14))
@@ -349,10 +480,30 @@ struct MorseReceiveView: View {
                         .font(.system(size: 14, design: .monospaced))
                         .foregroundStyle(.cyan.opacity(0.7))
                         .lineLimit(3)
+                        .textSelection(.enabled)
                 }
 
                 if !morseEngine.decodedText.isEmpty {
                     Divider().background(Color.white.opacity(0.1))
+
+                    // Decoded message section
+                    HStack {
+                        Text("DECODED MESSAGE")
+                            .font(.system(size: 11, weight: .bold))
+                            .tracking(2)
+                            .foregroundStyle(.white.opacity(0.4))
+
+                        Spacer()
+
+                        Button {
+                            UIPasteboard.general.string = morseEngine.decodedText
+                        } label: {
+                            Image(systemName: "doc.on.doc")
+                                .font(.system(size: 12))
+                                .foregroundStyle(.white.opacity(0.4))
+                        }
+                        .buttonStyle(HapticButtonStyle())
+                    }
 
                     Text(morseEngine.decodedText)
                         .font(.system(size: 22, weight: .semibold))
@@ -409,7 +560,7 @@ struct MorseReceiveView: View {
                                 .font(.system(size: 14, weight: .medium))
                                 .foregroundStyle(.white)
 
-                            Text("Keeps threshold within your range")
+                            Text("Adapts to ambient light conditions")
                                 .font(.system(size: 11))
                                 .foregroundStyle(.white.opacity(0.4))
                         }
@@ -421,22 +572,70 @@ struct MorseReceiveView: View {
                             .tint(.green)
                     }
 
-                    LiquidGlassSlider(
-                        value: $morseEngine.detectionThreshold,
-                        range: 0.1...0.9,
-                        label: "Detection Threshold",
-                        icon: "waveform.path",
-                        accentColor: .green
-                    )
-
-                    LiquidGlassSlider(
-                        value: $morseEngine.sendingSpeed,
-                        range: 5...30,
-                        label: "Expected Speed (WPM)",
-                        icon: "gauge.medium",
-                        accentColor: .orange,
-                        showPercentage: false
-                    )
+                    // Only show manual sensitivity slider when auto-sensitivity is OFF
+                    if !morseEngine.autoSensitivity {
+                        LiquidGlassSlider(
+                            value: $morseEngine.detectionThreshold,
+                            range: 0.1...0.9,
+                            label: "Detection Sensitivity",
+                            icon: "waveform.path",
+                            accentColor: .green
+                        )
+                    }
+                    
+                    Divider().background(Color.white.opacity(0.1))
+                    
+                    // Auto-detected WPM display
+                    HStack {
+                        Image(systemName: "gauge.with.dots.needle.67percent")
+                            .font(.system(size: 16))
+                            .foregroundStyle(.orange)
+                            .frame(width: 24)
+                        
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("Detected Speed")
+                                .font(.system(size: 14, weight: .medium))
+                                .foregroundStyle(.white)
+                            
+                            Text(morseEngine.timingConfidence.rawValue)
+                                .font(.system(size: 11))
+                                .foregroundStyle(timingConfidenceColor)
+                        }
+                        
+                        Spacer()
+                        
+                        if morseEngine.detectedWPM > 0 {
+                            Text("\(Int(morseEngine.detectedWPM)) WPM")
+                                .font(.system(size: 16, weight: .bold, design: .monospaced))
+                                .foregroundStyle(.orange)
+                        } else {
+                            Text("--")
+                                .font(.system(size: 16, weight: .bold, design: .monospaced))
+                                .foregroundStyle(.white.opacity(0.3))
+                        }
+                    }
+                    
+                    // Gap timing info (debug)
+                    if !morseEngine.gapTimingInfo.isEmpty {
+                        HStack {
+                            Image(systemName: "timer")
+                                .font(.system(size: 16))
+                                .foregroundStyle(.cyan.opacity(0.7))
+                                .frame(width: 24)
+                            
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text("Gap Thresholds")
+                                    .font(.system(size: 14, weight: .medium))
+                                    .foregroundStyle(.white)
+                                
+                                Text(morseEngine.gapTimingInfo)
+                                    .font(.system(size: 11, design: .monospaced))
+                                    .foregroundStyle(.cyan.opacity(0.6))
+                            }
+                            
+                            Spacer()
+                        }
+                    }
                 }
             }
         }
@@ -452,32 +651,39 @@ struct MorseReceiveView: View {
 
     private var controlsSection: some View {
         HStack(spacing: 12) {
-            // Start / Stop
+            // Start / Stop / Processing
             Button {
-                if morseEngine.isReceiving {
+                if morseEngine.isReceiving && !morseEngine.isProcessing {
                     cameraDetector.stop()
                     morseEngine.stopReceiving()
-                } else {
+                } else if !morseEngine.isReceiving && !morseEngine.isProcessing {
                     cameraDetector.start()
                     morseEngine.startReceiving()
                 }
             } label: {
                 HStack(spacing: 10) {
-                    Image(systemName: morseEngine.isReceiving ? "stop.fill" : "camera.fill")
-                        .font(.system(size: 18, weight: .semibold))
+                    if morseEngine.isProcessing {
+                        ProgressView()
+                            .progressViewStyle(CircularProgressViewStyle(tint: .white))
+                            .scaleEffect(0.8)
+                    } else {
+                        Image(systemName: morseEngine.isReceiving ? "stop.fill" : "camera.fill")
+                            .font(.system(size: 18, weight: .semibold))
+                    }
 
-                    Text(morseEngine.isReceiving ? "Stop" : "Start Detecting")
+                    Text(buttonTitle)
                         .font(.system(size: 16, weight: .bold))
                 }
-                .foregroundStyle(morseEngine.isReceiving ? .white : .black)
+                .foregroundStyle(buttonForegroundColor)
                 .frame(maxWidth: .infinity)
                 .padding(.vertical, 16)
                 .background(
                     Capsule()
-                        .fill(morseEngine.isReceiving ? .red.opacity(0.8) : .white)
+                        .fill(buttonBackgroundColor)
                 )
             }
             .buttonStyle(HapticButtonStyle())
+            .disabled(morseEngine.isProcessing)
 
             // Clear
             if !morseEngine.detectedMorse.isEmpty {

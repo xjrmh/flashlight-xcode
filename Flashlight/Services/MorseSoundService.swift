@@ -47,10 +47,11 @@ final class MorseSoundService {
         do {
             try session.setCategory(.ambient, options: [.mixWithOthers])
             try session.setActive(true)
+            isConfigured = true
         } catch {
             print("Audio session error: \(error.localizedDescription)")
+            // Leave isConfigured false to allow retry on next attempt
         }
-        isConfigured = true
     }
 
     private func configureEngineIfNeeded() {

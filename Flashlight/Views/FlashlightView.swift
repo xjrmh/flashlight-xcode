@@ -178,6 +178,15 @@ struct FlashlightView: View {
         )
     }
 
+    private var brightnessBinding: Binding<Double> {
+        Binding(
+            get: { flashlight.brightness },
+            set: { newValue in
+                flashlight.setBrightness(newValue)
+            }
+        )
+    }
+
     private var backgroundGradient: some View {
         ZStack {
             Color.black
@@ -355,14 +364,12 @@ struct FlashlightView: View {
             VStack(spacing: 20) {
                 // Brightness slider
                 LiquidGlassSlider(
-                    value: $flashlight.brightness,
+                    value: brightnessBinding,
                     label: "Brightness",
                     icon: "sun.max.fill",
                     accentColor: .yellow
                 )
-                .onChange(of: flashlight.brightness) { _, newValue in
-                    flashlight.setBrightness(newValue)
-                }
+                .disabled(flashlight.isBrightnessLockedToMax)
 
                 Divider()
                     .background(Color.white.opacity(0.1))

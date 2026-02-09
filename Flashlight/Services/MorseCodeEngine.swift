@@ -31,6 +31,17 @@ class MorseCodeEngine: ObservableObject {
     @Published var dedicatedSourceMode: Bool = false
     @Published var preambleDetected: Bool = false
     @Published var detectorState: DetectorState = .idle
+    @Published var detectedWPM: Double = 0  // Auto-detected words per minute
+    @Published var timingConfidence: TimingConfidence = .learning
+    @Published var gapTimingInfo: String = ""  // Debug info for gap detection
+    @Published var isProcessing: Bool = false  // True during post-processing verification
+    
+    enum TimingConfidence: String {
+        case learning = "Learning..."
+        case low = "Low"
+        case medium = "Medium"
+        case high = "High"
+    }
     
     // MARK: - Detection State Machine
     enum DetectorState: Equatable {
@@ -50,8 +61,17 @@ class MorseCodeEngine: ObservableObject {
     // MARK: - Timing Analysis
     private var pulseDurations: [TimeInterval] = []
     private var gapDurations: [TimeInterval] = []
-    private var estimatedDotDuration: TimeInterval = 0.08 // Will be updated adaptively
+    private var estimatedDotDuration: TimeInterval = 0.05 // Start faster (24 WPM), will adapt
     private var lastUpdateTime: CFAbsoluteTime = 0
+    
+    // MARK: - Signal Sequence (for rebuilding with gaps)
+    /// Stores the sequence of pulses and gaps for accurate reconstruction
+    private var signalSequence: [SignalEvent] = []
+    
+    enum SignalEvent {
+        case pulse(duration: TimeInterval)
+        case gap(duration: TimeInterval)
+    }
     
     // MARK: - Preamble Detection
     private var rawDetectedMorse: String = ""
@@ -316,7 +336,9 @@ class MorseCodeEngine: ObservableObject {
                 let pulseDuration = timestamp - startTime
                 
                 // Filter out noise pulses (too short)
-                let minPulseDuration = estimatedDotDuration * 0.2
+                // At 60fps, minimum detectable pulse is ~16ms (1 frame)
+                // Be lenient to allow high-speed morse detection
+                let minPulseDuration = max(0.015, estimatedDotDuration * 0.15)
                 if pulseDuration >= minPulseDuration {
                     processPulse(duration: pulseDuration)
                 }
@@ -339,11 +361,17 @@ class MorseCodeEngine: ObservableObject {
     }
     
     private func processPulse(duration: TimeInterval) {
+        // Record pulse event in sequence
+        signalSequence.append(.pulse(duration: duration))
+        
         // Store duration for adaptive timing
         pulseDurations.append(duration)
         if pulseDurations.count > 20 {
             pulseDurations.removeFirst()
         }
+        
+        // Track previous confidence to detect improvement
+        let previousConfidence = timingConfidence
         
         // Update estimated dot duration using k-means style clustering
         updateTimingEstimates()
@@ -361,6 +389,12 @@ class MorseCodeEngine: ObservableObject {
         )
         receivedSignals.append(signal)
         
+        // If confidence improved significantly, reclassify all previous signals
+        if shouldReclassify(from: previousConfidence, to: timingConfidence) {
+            reclassifyAllSignals()
+            return // reclassifyAllSignals handles morse string and decoding
+        }
+        
         // Handle preamble detection in dedicated mode
         if dedicatedSourceMode && !preambleDetected {
             rawDetectedMorse += symbol
@@ -374,44 +408,183 @@ class MorseCodeEngine: ObservableObject {
         detectedMorse += symbol
     }
     
+    private func shouldReclassify(from oldConfidence: TimingConfidence, to newConfidence: TimingConfidence) -> Bool {
+        // Reclassify when we transition from learning/low to medium/high
+        let dominated: [TimingConfidence: Int] = [.learning: 0, .low: 1, .medium: 2, .high: 3]
+        guard let oldLevel = dominated[oldConfidence], let newLevel = dominated[newConfidence] else {
+            return false
+        }
+        // Reclassify when jumping from learning/low (0-1) to medium/high (2-3)
+        return oldLevel < 2 && newLevel >= 2
+    }
+    
+    private func reclassifyAllSignals() {
+        // Reclassify all received signals with the improved timing estimate
+        let threshold = estimatedDotDuration * 2.0
+        
+        // Update signal types based on new threshold
+        var newSignals: [MorseSignal] = []
+        for signal in receivedSignals {
+            let isDot = signal.duration < threshold
+            let newSignal = MorseSignal(
+                type: isDot ? .dot : .dash,
+                duration: signal.duration,
+                timestamp: signal.timestamp
+            )
+            newSignals.append(newSignal)
+        }
+        receivedSignals = newSignals
+        
+        // Rebuild morse string from reclassified signals
+        rebuildMorseFromSignals()
+    }
+    
+    private func rebuildMorseFromSignals() {
+        // Rebuild morse string from signal sequence (pulses + gaps)
+        var newMorse = ""
+        let pulseThreshold = estimatedDotDuration * 2.0
+        
+        for event in signalSequence {
+            switch event {
+            case .pulse(let duration):
+                let symbol = duration < pulseThreshold ? "." : "-"
+                newMorse += symbol
+            case .gap(let duration):
+                // Use ML-style clustering for gap classification
+                let gapType = classifyGap(duration)
+                switch gapType {
+                case .word:
+                    // Word gap
+                    if !newMorse.isEmpty && !newMorse.hasSuffix(" ") && !newMorse.hasSuffix("/") {
+                        newMorse += " / "
+                    }
+                case .letter:
+                    // Letter gap
+                    if !newMorse.isEmpty && !newMorse.hasSuffix(" ") && !newMorse.hasSuffix("/") {
+                        newMorse += " "
+                    }
+                case .element:
+                    // Element gaps don't add separators
+                    break
+                }
+            }
+        }
+        
+        // Also update receivedSignals to match new classification
+        var newSignals: [MorseSignal] = []
+        for event in signalSequence {
+            if case .pulse(let duration) = event {
+                let isDot = duration < pulseThreshold
+                let signal = MorseSignal(
+                    type: isDot ? .dot : .dash,
+                    duration: duration,
+                    timestamp: Date()
+                )
+                newSignals.append(signal)
+            }
+        }
+        receivedSignals = newSignals
+        
+        // Handle preamble mode
+        if dedicatedSourceMode {
+            if let range = newMorse.range(of: Self.preamblePattern) {
+                preambleDetected = true
+                detectedMorse = String(newMorse[range.upperBound...]).trimmingCharacters(in: .whitespaces)
+                rawDetectedMorse = ""
+            } else {
+                preambleDetected = false
+                rawDetectedMorse = newMorse
+                detectedMorse = ""
+            }
+        } else {
+            detectedMorse = newMorse
+        }
+        
+        // Re-decode
+        tryDecode()
+    }
+    
     private func processGap(duration: TimeInterval) {
-        // Store gap duration
+        // Record gap event in sequence - this is the most important part
+        // The final verification will use this data to properly classify gaps
+        signalSequence.append(.gap(duration: duration))
+        
+        // Store gap duration for analysis
         gapDurations.append(duration)
-        if gapDurations.count > 20 {
+        if gapDurations.count > 30 {
             gapDurations.removeFirst()
         }
         
-        // Don't add separators for element gaps (within a letter)
-        // Only letter gaps and word gaps add to the output
+        // During real-time detection, use simple ratio-based classification
+        // This gives immediate feedback but may not be accurate
+        // The final verification will correct this when user stops
+        
+        // Use a more lenient threshold for real-time display
+        // Standard morse: element=1, letter=3, word=7 units
+        // Threshold between element and letter should be ~2 units
+        let letterThreshold = estimatedDotDuration * 1.8  // More lenient
+        let wordThreshold = estimatedDotDuration * 5.0
+        
+        if duration >= wordThreshold {
+            // Word gap - add word separator
+            if shouldAddSeparator() {
+                detectedMorse += " / "
+                tryDecode()
+            }
+        } else if duration >= letterThreshold {
+            // Letter gap - add space between letters
+            if shouldAddSeparator() {
+                detectedMorse += " "
+                tryDecode()
+            }
+        }
+        // Element gaps don't add separators
     }
     
     private func startGapMonitoring() {
         gapCheckTask?.cancel()
         
+        // This monitors for gaps while we're still waiting (no new pulse has arrived)
+        // It handles the "end of transmission" case where we need to finalize gaps
+        // that haven't been closed by a new pulse yet
         gapCheckTask = Task { @MainActor in
-            // Wait for letter gap
-            let letterGapDuration = estimatedDotDuration * 3.5
-            try? await Task.sleep(nanoseconds: UInt64(letterGapDuration * 1_000_000_000))
+            // Get thresholds from clustering (or fallback to ratio-based)
+            let thresholds = computeGapThresholds()
+            
+            // Wait for letter gap duration
+            try? await Task.sleep(nanoseconds: UInt64(thresholds.letterThreshold * 1_000_000_000))
             
             guard !Task.isCancelled else { return }
-            guard case .inGap = detectorState else { return }
+            guard case .inGap(let gapStartTime, _) = detectorState else { return }
             
-            // Letter gap detected - add space
-            if shouldAddSeparator() {
-                detectedMorse += " "
-                tryDecode()
+            // Still in gap - check current duration
+            let currentGapDuration = CFAbsoluteTimeGetCurrent() - gapStartTime
+            let currentGapType = classifyGap(currentGapDuration)
+            
+            // Add letter separator if this is at least a letter gap
+            if currentGapType == .letter || currentGapType == .word {
+                if shouldAddSeparator() {
+                    detectedMorse += " "
+                    tryDecode()
+                }
             }
             
             // Wait more for word gap
-            let additionalWait = estimatedDotDuration * 4.0 // 7 - 3 = 4 more units
-            try? await Task.sleep(nanoseconds: UInt64(additionalWait * 1_000_000_000))
+            let additionalWait = thresholds.wordThreshold - thresholds.letterThreshold
+            try? await Task.sleep(nanoseconds: UInt64(max(0.1, additionalWait) * 1_000_000_000))
             
             guard !Task.isCancelled else { return }
-            guard case .inGap = detectorState else { return }
+            guard case .inGap(let gapStartTime2, _) = detectorState else { return }
             
-            // Word gap detected - add word separator
-            if shouldAddSeparator() {
-                detectedMorse += "/ "
+            // Check if this has become a word gap
+            let finalGapDuration = CFAbsoluteTimeGetCurrent() - gapStartTime2
+            if classifyGap(finalGapDuration) == .word {
+                if shouldAddSeparator() {
+                    // Replace trailing space with word separator
+                    if detectedMorse.hasSuffix(" ") && !detectedMorse.hasSuffix("/ ") {
+                        detectedMorse = String(detectedMorse.dropLast()) + " / "
+                    }
+                }
             }
         }
     }
@@ -429,8 +602,11 @@ class MorseCodeEngine: ObservableObject {
     
     private func updateTimingEstimates() {
         guard pulseDurations.count >= 3 else {
-            // Use WPM-based estimate initially
-            estimatedDotDuration = MorseCode.Timing(wpm: sendingSpeed).dotDuration
+            // Not enough data yet - use a reasonable default
+            if estimatedDotDuration == 0 {
+                estimatedDotDuration = 0.05 // 24 WPM default - adapts quickly
+            }
+            timingConfidence = .learning
             return
         }
         
@@ -442,6 +618,9 @@ class MorseCodeEngine: ObservableObject {
         var dashCentroid = sorted.last!
         
         // Iterate to refine centroids
+        var finalDotCount = 0
+        var finalDashCount = 0
+        
         for _ in 0..<5 {
             var dotSum: TimeInterval = 0
             var dotCount = 0
@@ -466,22 +645,171 @@ class MorseCodeEngine: ObservableObject {
             if dashCount > 0 {
                 dashCentroid = dashSum / Double(dashCount)
             }
+            
+            finalDotCount = dotCount
+            finalDashCount = dashCount
         }
         
+        // Calculate timing confidence based on cluster separation and sample count
+        let ratio = dashCentroid / max(0.001, dotCentroid)
+        let hasBothClusters = finalDotCount > 0 && finalDashCount > 0
+        let goodSeparation = ratio > 2.0 && ratio < 5.0 // Ideal: dash is 3x dot
+        
         // Estimate dot duration - prefer the dot cluster if we have both
-        if dashCentroid > dotCentroid * 1.5 {
+        if hasBothClusters && ratio > 1.5 {
             // Clear separation - use dot cluster
             estimatedDotDuration = dotCentroid
+            
+            // Update confidence
+            if pulseDurations.count >= 10 && goodSeparation {
+                timingConfidence = .high
+            } else if pulseDurations.count >= 5 {
+                timingConfidence = .medium
+            } else {
+                timingConfidence = .low
+            }
         } else {
             // No clear separation - use median of shorter half
             let shortHalf = sorted.prefix(sorted.count / 2 + 1)
             estimatedDotDuration = shortHalf[shortHalf.count / 2]
+            timingConfidence = pulseDurations.count >= 5 ? .low : .learning
         }
         
-        // Clamp to reasonable range
-        let minDot: TimeInterval = 0.03
-        let maxDot: TimeInterval = 0.5
+        // Clamp to reasonable range (3 WPM to 40 WPM)
+        let minDot: TimeInterval = 0.03  // ~40 WPM
+        let maxDot: TimeInterval = 0.4   // ~3 WPM
         estimatedDotDuration = max(minDot, min(maxDot, estimatedDotDuration))
+        
+        // Calculate and publish detected WPM
+        // Formula: WPM = 1.2 / dotDuration (from MorseCode.Timing)
+        let calculatedWPM = 1.2 / estimatedDotDuration
+        detectedWPM = min(40, max(3, calculatedWPM.rounded()))
+    }
+    
+    // MARK: - Gap Classification using Clustering
+    
+    /// Classifies a gap duration using adaptive thresholds learned from data
+    private func classifyGap(_ duration: TimeInterval) -> GapType {
+        // If we have enough gap data, use clustering to find natural boundaries
+        if gapDurations.count >= 5 {
+            let thresholds = computeGapThresholds()
+            if duration >= thresholds.wordThreshold {
+                return .word
+            } else if duration >= thresholds.letterThreshold {
+                return .letter
+            } else {
+                return .element
+            }
+        }
+        
+        // Fall back to ratio-based classification using estimated dot duration
+        let letterThreshold = estimatedDotDuration * 2.0
+        let wordThreshold = estimatedDotDuration * 5.0
+        
+        if duration >= wordThreshold {
+            return .word
+        } else if duration >= letterThreshold {
+            return .letter
+        } else {
+            return .element
+        }
+    }
+    
+    enum GapType {
+        case element  // Gap within a letter (between dots/dashes)
+        case letter   // Gap between letters
+        case word     // Gap between words
+    }
+    
+    struct GapThresholds {
+        let letterThreshold: TimeInterval  // Boundary between element and letter gaps
+        let wordThreshold: TimeInterval    // Boundary between letter and word gaps
+    }
+    
+    /// Uses 3-way k-means clustering to find natural gap boundaries
+    private func computeGapThresholds() -> GapThresholds {
+        let gaps = gapDurations.sorted()
+        
+        guard gaps.count >= 5 else {
+            // Not enough data - use defaults based on dot duration
+            return GapThresholds(
+                letterThreshold: estimatedDotDuration * 2.0,
+                wordThreshold: estimatedDotDuration * 5.0
+            )
+        }
+        
+        // Standard morse timing ratios: element=1, letter=3, word=7 units
+        // Initialize 3 centroids based on expected ratios
+        var elementCentroid = estimatedDotDuration * 1.0
+        var letterCentroid = estimatedDotDuration * 3.0
+        var wordCentroid = estimatedDotDuration * 7.0
+        
+        // K-means iterations to find natural clusters
+        for _ in 0..<10 {
+            var elementSum: TimeInterval = 0, elementCount = 0
+            var letterSum: TimeInterval = 0, letterCount = 0
+            var wordSum: TimeInterval = 0, wordCount = 0
+            
+            // Assign each gap to nearest centroid
+            for gap in gaps {
+                let distToElement = abs(gap - elementCentroid)
+                let distToLetter = abs(gap - letterCentroid)
+                let distToWord = abs(gap - wordCentroid)
+                
+                let minDist = min(distToElement, distToLetter, distToWord)
+                
+                if minDist == distToElement {
+                    elementSum += gap
+                    elementCount += 1
+                } else if minDist == distToLetter {
+                    letterSum += gap
+                    letterCount += 1
+                } else {
+                    wordSum += gap
+                    wordCount += 1
+                }
+            }
+            
+            // Update centroids
+            if elementCount > 0 {
+                elementCentroid = elementSum / Double(elementCount)
+            }
+            if letterCount > 0 {
+                letterCentroid = letterSum / Double(letterCount)
+            }
+            if wordCount > 0 {
+                wordCentroid = wordSum / Double(wordCount)
+            }
+            
+            // Ensure centroids stay ordered
+            if letterCentroid <= elementCentroid {
+                letterCentroid = elementCentroid * 2.5
+            }
+            if wordCentroid <= letterCentroid {
+                wordCentroid = letterCentroid * 2.0
+            }
+        }
+        
+        // Calculate thresholds as midpoints between cluster centroids
+        let letterThreshold = (elementCentroid + letterCentroid) / 2.0
+        let wordThreshold = (letterCentroid + wordCentroid) / 2.0
+        
+        // Apply minimum bounds based on dot duration
+        let minLetterThreshold = estimatedDotDuration * 1.8
+        let minWordThreshold = estimatedDotDuration * 4.5
+        
+        let finalLetterThreshold = max(letterThreshold, minLetterThreshold)
+        let finalWordThreshold = max(wordThreshold, minWordThreshold)
+        
+        // Update debug info
+        let letterMs = Int(finalLetterThreshold * 1000)
+        let wordMs = Int(finalWordThreshold * 1000)
+        gapTimingInfo = "Letter: \(letterMs)ms, Word: \(wordMs)ms"
+        
+        return GapThresholds(
+            letterThreshold: finalLetterThreshold,
+            wordThreshold: finalWordThreshold
+        )
     }
     
     private func checkForPreamble() {
@@ -509,7 +837,8 @@ class MorseCodeEngine: ObservableObject {
     func startReceiving() {
         isReceiving = true
         resetReceivingState()
-        estimatedDotDuration = MorseCode.Timing(wpm: sendingSpeed).dotDuration
+        // Start with faster default (24 WPM) - adapts to actual speed
+        estimatedDotDuration = 0.05
         detectorState = .waitingForSignal
     }
 
@@ -517,7 +846,15 @@ class MorseCodeEngine: ObservableObject {
         isReceiving = false
         gapCheckTask?.cancel()
         detectorState = .idle
-        tryDecode()
+        
+        // Show processing state
+        isProcessing = true
+        
+        // Run post-processing verification with all collected data
+        performFinalVerification()
+        
+        // Done processing
+        isProcessing = false
 
         if !detectedMorse.trimmingCharacters(in: .whitespaces).isEmpty {
             let message = MorseMessage(
@@ -528,6 +865,296 @@ class MorseCodeEngine: ObservableObject {
             )
             receiveHistory.insert(message, at: 0)
         }
+    }
+    
+    // MARK: - Post-Processing Verification
+    
+    /// Performs comprehensive verification of all detections using complete signal data
+    private func performFinalVerification() {
+        guard signalSequence.count >= 2 else {
+            tryDecode()
+            return
+        }
+        
+        // Step 1: Extract all pulse and gap durations from the sequence
+        var allPulses: [TimeInterval] = []
+        var allGaps: [TimeInterval] = []
+        
+        for event in signalSequence {
+            switch event {
+            case .pulse(let duration):
+                allPulses.append(duration)
+            case .gap(let duration):
+                allGaps.append(duration)
+            }
+        }
+        
+        // Need at least one pulse to proceed
+        guard !allPulses.isEmpty else {
+            tryDecode()
+            return
+        }
+        
+        // Step 2: Run k-means on pulses to find optimal dot/dash threshold
+        let optimizedDotDuration = computeOptimalDotDuration(from: allPulses)
+        let pulseThreshold = optimizedDotDuration * 2.0
+        
+        // Step 3: Classify each gap individually based on context
+        // In standard morse: element gap ≈ 1 dot, letter gap ≈ 3 dots, word gap ≈ 7 dots
+        // We'll use the ratio of each gap to the dot duration
+        
+        // Calculate gap ratios (gap / dot duration)
+        let gapRatios = allGaps.map { $0 / optimizedDotDuration }
+        
+        // Find natural clusters in gap ratios
+        // Expected: element gaps ~1x, letter gaps ~3x, word gaps ~7x
+        let sortedRatios = gapRatios.sorted()
+        
+        // Use Jenks natural breaks or simple threshold
+        // If ratio > 2, it's likely a letter gap
+        // If ratio > 5, it's likely a word gap
+        let letterRatioThreshold: Double
+        let wordRatioThreshold: Double
+        
+        if sortedRatios.count >= 2 {
+            // Find the largest relative jump in sorted ratios
+            var maxJumpRatio: Double = 0
+            var jumpIndex = 0
+            
+            for i in 0..<(sortedRatios.count - 1) {
+                let currentRatio = sortedRatios[i]
+                let nextRatio = sortedRatios[i + 1]
+                let jumpRatio = nextRatio / max(0.1, currentRatio)
+                
+                if jumpRatio > maxJumpRatio {
+                    maxJumpRatio = jumpRatio
+                    jumpIndex = i
+                }
+            }
+            
+            // If there's a significant jump (>1.5x), use it as the letter threshold
+            if maxJumpRatio > 1.5 {
+                letterRatioThreshold = (sortedRatios[jumpIndex] + sortedRatios[min(jumpIndex + 1, sortedRatios.count - 1)]) / 2.0
+            } else {
+                // No clear jump - use fixed threshold
+                letterRatioThreshold = 1.8
+            }
+            wordRatioThreshold = max(5.0, letterRatioThreshold * 2.5)
+        } else {
+            letterRatioThreshold = 1.8
+            wordRatioThreshold = 5.0
+        }
+        
+        // Step 4: Rebuild morse string using ratio-based classification
+        var verifiedMorse = ""
+        var gapIndex = 0
+        
+        for event in signalSequence {
+            switch event {
+            case .pulse(let duration):
+                let symbol = duration < pulseThreshold ? "." : "-"
+                verifiedMorse += symbol
+                
+            case .gap(let duration):
+                let ratio = duration / optimizedDotDuration
+                
+                if ratio >= wordRatioThreshold {
+                    // Word gap
+                    if !verifiedMorse.isEmpty && !verifiedMorse.hasSuffix(" ") && !verifiedMorse.hasSuffix("/") {
+                        verifiedMorse += " / "
+                    }
+                } else if ratio >= letterRatioThreshold {
+                    // Letter gap
+                    if !verifiedMorse.isEmpty && !verifiedMorse.hasSuffix(" ") && !verifiedMorse.hasSuffix("/") {
+                        verifiedMorse += " "
+                    }
+                }
+                // Element gaps - no separator needed
+            }
+        }
+        
+        // Step 5: Update the detected morse and signals
+        estimatedDotDuration = optimizedDotDuration
+        
+        // Update WPM based on final analysis
+        let calculatedWPM = 1.2 / optimizedDotDuration
+        detectedWPM = min(40, max(3, calculatedWPM.rounded()))
+        timingConfidence = allPulses.count >= 10 ? .high : (allPulses.count >= 5 ? .medium : .low)
+        
+        // Update gap timing info (using ratio-based thresholds)
+        let letterMs = Int(letterRatioThreshold * optimizedDotDuration * 1000)
+        let wordMs = Int(wordRatioThreshold * optimizedDotDuration * 1000)
+        gapTimingInfo = "Letter: \(letterMs)ms (\(String(format: "%.1f", letterRatioThreshold))x), Word: \(wordMs)ms"
+        
+        // Handle preamble mode
+        if dedicatedSourceMode {
+            if let range = verifiedMorse.range(of: Self.preamblePattern) {
+                detectedMorse = String(verifiedMorse[range.upperBound...]).trimmingCharacters(in: .whitespaces)
+            } else {
+                detectedMorse = verifiedMorse
+            }
+        } else {
+            detectedMorse = verifiedMorse
+        }
+        
+        // Update received signals to match verified classification
+        var newSignals: [MorseSignal] = []
+        for event in signalSequence {
+            if case .pulse(let duration) = event {
+                let isDot = duration < pulseThreshold
+                let signal = MorseSignal(
+                    type: isDot ? .dot : .dash,
+                    duration: duration,
+                    timestamp: Date()
+                )
+                newSignals.append(signal)
+            }
+        }
+        receivedSignals = newSignals
+        
+        // Final decode
+        tryDecode()
+    }
+    
+    /// Computes optimal dot duration using k-means clustering on all pulses
+    private func computeOptimalDotDuration(from pulses: [TimeInterval]) -> TimeInterval {
+        guard !pulses.isEmpty else {
+            return 0.1 // Default 12 WPM
+        }
+        
+        guard pulses.count >= 2 else {
+            return pulses[0]
+        }
+        
+        let sorted = pulses.sorted()
+        
+        // Initialize centroids
+        var dotCentroid = sorted[0]
+        var dashCentroid = sorted[sorted.count - 1]
+        
+        // K-means iterations
+        for _ in 0..<10 {
+            var dotSum: TimeInterval = 0, dotCount = 0
+            var dashSum: TimeInterval = 0, dashCount = 0
+            
+            let threshold = (dotCentroid + dashCentroid) / 2
+            
+            for duration in pulses {
+                if duration < threshold {
+                    dotSum += duration
+                    dotCount += 1
+                } else {
+                    dashSum += duration
+                    dashCount += 1
+                }
+            }
+            
+            if dotCount > 0 { dotCentroid = dotSum / Double(dotCount) }
+            if dashCount > 0 { dashCentroid = dashSum / Double(dashCount) }
+        }
+        
+        // Verify we have reasonable separation (dash should be ~3x dot)
+        let ratio = dashCentroid / max(0.001, dotCentroid)
+        if ratio > 1.5 && ratio < 5.0 {
+            return dotCentroid
+        }
+        
+        // Fallback: use median of shorter half
+        let halfCount = (sorted.count + 1) / 2
+        let medianIndex = halfCount / 2
+        return sorted[medianIndex]
+    }
+    
+    /// Computes optimal gap thresholds by finding natural breaks in sorted gap data
+    private func computeOptimalGapThresholds(from gaps: [TimeInterval], dotDuration: TimeInterval) -> GapThresholds {
+        guard gaps.count >= 2 else {
+            return GapThresholds(
+                letterThreshold: dotDuration * 2.0,
+                wordThreshold: dotDuration * 5.0
+            )
+        }
+        
+        let sorted = gaps.sorted()
+        
+        // Find the largest gap (jump) between consecutive sorted values
+        // This indicates a natural boundary between gap types
+        var maxJump: TimeInterval = 0
+        var maxJumpIndex = 0
+        var secondMaxJump: TimeInterval = 0
+        var secondMaxJumpIndex = 0
+        
+        for i in 0..<(sorted.count - 1) {
+            let jump = sorted[i + 1] - sorted[i]
+            // Use relative jump (ratio) to handle different scales
+            let relativeJump = jump / max(0.001, sorted[i])
+            
+            if relativeJump > maxJump / max(0.001, sorted[max(0, maxJumpIndex - 1)]) {
+                secondMaxJump = maxJump
+                secondMaxJumpIndex = maxJumpIndex
+                maxJump = jump
+                maxJumpIndex = i
+            } else if jump > secondMaxJump {
+                secondMaxJump = jump
+                secondMaxJumpIndex = i
+            }
+        }
+        
+        // Analyze the distribution
+        let minGap = sorted[0]
+        let maxGap = sorted[sorted.count - 1]
+        let range = maxGap - minGap
+        
+        // If there's significant spread, use the largest jump as letter threshold
+        if range > minGap * 1.5 && maxJump > minGap * 0.5 {
+            // The jump point is the threshold
+            let letterThreshold = (sorted[maxJumpIndex] + sorted[min(maxJumpIndex + 1, sorted.count - 1)]) / 2.0
+            
+            // Look for a second jump for word threshold
+            var wordThreshold = letterThreshold * 2.5
+            if secondMaxJumpIndex > maxJumpIndex && secondMaxJump > maxJump * 0.3 {
+                wordThreshold = (sorted[secondMaxJumpIndex] + sorted[min(secondMaxJumpIndex + 1, sorted.count - 1)]) / 2.0
+            }
+            
+            return GapThresholds(
+                letterThreshold: max(letterThreshold, dotDuration * 1.5),
+                wordThreshold: max(wordThreshold, letterThreshold * 1.8)
+            )
+        }
+        
+        // Fallback: Use 2-means clustering on gaps
+        var shortCentroid = sorted[0]
+        var longCentroid = sorted[sorted.count - 1]
+        
+        for _ in 0..<10 {
+            var shortSum: TimeInterval = 0, shortCount = 0
+            var longSum: TimeInterval = 0, longCount = 0
+            
+            let threshold = (shortCentroid + longCentroid) / 2.0
+            
+            for gap in sorted {
+                if gap < threshold {
+                    shortSum += gap
+                    shortCount += 1
+                } else {
+                    longSum += gap
+                    longCount += 1
+                }
+            }
+            
+            if shortCount > 0 { shortCentroid = shortSum / Double(shortCount) }
+            if longCount > 0 { longCentroid = longSum / Double(longCount) }
+        }
+        
+        // Letter threshold is between short (element) and long (letter) clusters
+        let letterThreshold = (shortCentroid + longCentroid) / 2.0
+        let wordThreshold = longCentroid * 2.0
+        
+
+        
+        return GapThresholds(
+            letterThreshold: max(letterThreshold, dotDuration * 1.5),
+            wordThreshold: max(wordThreshold, letterThreshold * 1.8)
+        )
     }
 
     func clearReceived() {
@@ -552,10 +1179,13 @@ class MorseCodeEngine: ObservableObject {
         signalPeak = 0.5
         thresholdHistory = []
         
-        // Reset timing
+        // Reset timing and WPM detection
         pulseDurations = []
         gapDurations = []
-        estimatedDotDuration = MorseCode.Timing(wpm: sendingSpeed).dotDuration
+        signalSequence = []
+        estimatedDotDuration = 0.05 // 24 WPM default - adapts quickly
+        detectedWPM = 0
+        timingConfidence = .learning
         
         // Reset debouncing
         consecutiveHighSamples = 0

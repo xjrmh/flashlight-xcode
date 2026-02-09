@@ -59,7 +59,7 @@ class CameraLightDetector: NSObject, ObservableObject {
     
     // MARK: - Signal Processing
     private var signalHistory: [Double] = []
-    private let signalHistorySize = 8
+    private let signalHistorySize = 4  // Smaller for faster response
     private var lastFrameTime: CFAbsoluteTime = 0
     
     /// Region of interest for light detection (center portion of frame)
@@ -226,24 +226,6 @@ class CameraLightDetector: NSObject, ObservableObject {
             }
         }
     }
-    
-    func recalibrate() {
-        isCalibrating = true
-        calibrationFrameCount = 0
-        baselineSamples = []
-        
-        // Unlock exposure to recalibrate
-        guard let camera = camera else { return }
-        do {
-            try camera.lockForConfiguration()
-            if camera.isExposureModeSupported(.continuousAutoExposure) {
-                camera.exposureMode = .continuousAutoExposure
-            }
-            camera.unlockForConfiguration()
-        } catch {
-            print("Failed to unlock camera for recalibration: \(error.localizedDescription)")
-        }
-    }
 
     /// Analyze the center region for light source with optimized algorithm
     private func analyzeForLightSource(from sampleBuffer: CMSampleBuffer) -> LightAnalysis {
@@ -390,14 +372,15 @@ extension CameraLightDetector: AVCaptureVideoDataOutputSampleBufferDelegate {
             }
         }
         
-        // Apply temporal smoothing with fast attack, slow decay
+        // Apply minimal smoothing for fast response at high speeds
+        // At 60fps, each frame is ~16ms, so we need very fast response
         let smoothedScore: Double
         if signalHistory.isEmpty {
             smoothedScore = score
         } else {
             let lastValue = signalHistory.last ?? score
-            // Fast attack (0.7), slow decay (0.3) for responsive light detection
-            let alpha = score > lastValue ? 0.7 : 0.3
+            // Very fast attack (0.85), faster decay (0.6) for high-speed morse
+            let alpha = score > lastValue ? 0.85 : 0.6
             smoothedScore = lastValue * (1 - alpha) + score * alpha
         }
         
