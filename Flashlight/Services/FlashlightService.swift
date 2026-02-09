@@ -16,7 +16,6 @@ class FlashlightService: ObservableObject {
     }()
 
     private var strobeTask: Task<Void, Never>?
-    private var strobePreviousBrightness: Double = 1.0
     private var strobePreviousIsOn: Bool = false
 
     var hasTorch: Bool {
@@ -79,11 +78,8 @@ class FlashlightService: ObservableObject {
         let clampedIntensity = clamp(intensity)
         torchError = nil
         strobePreviousIsOn = isOn
-        strobePreviousBrightness = brightness
         isStrobing = true
         strobeIntensity = clampedIntensity
-        isBrightnessLockedToMax = true
-        brightness = 1.0
         isOn = true
 
         if strobeTask == nil {
@@ -91,7 +87,8 @@ class FlashlightService: ObservableObject {
                 guard let self else { return }
                 while !Task.isCancelled && self.isStrobing {
                     let interval = self.strobeInterval(for: self.strobeIntensity)
-                    self.setTorch(isOn: true, level: 1.0)
+                    let level = Float(max(0.01, min(1.0, self.brightness)))
+                    self.setTorch(isOn: true, level: level)
                     try? await Task.sleep(nanoseconds: UInt64(interval * 0.5 * 1_000_000_000))
                     self.setTorch(isOn: false, level: 0)
                     try? await Task.sleep(nanoseconds: UInt64(interval * 0.5 * 1_000_000_000))
@@ -112,7 +109,6 @@ class FlashlightService: ObservableObject {
         strobeTask?.cancel()
         strobeTask = nil
         isBrightnessLockedToMax = false
-        brightness = strobePreviousBrightness
         isOn = strobePreviousIsOn
         applyTorch()
     }

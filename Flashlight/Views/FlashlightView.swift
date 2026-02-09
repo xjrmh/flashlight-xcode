@@ -7,7 +7,10 @@ struct FlashlightView: View {
     @State private var isStrobeActive = false
     @State private var strobeIntensity: Double = 0
     @State private var didActivateStrobeDrag = false
+    @State private var strobeDragStartedOutside = false
     @State private var powerButtonFrame: CGRect = .zero
+
+    private let strobeControlSize: CGFloat = 320
     
     // Timer state - sliderValue 305 = infinity, 5-300 = actual seconds
     @State private var timerSliderValue: Double = 305 // Max = infinity
@@ -96,6 +99,12 @@ struct FlashlightView: View {
                 stopTimer()
             }
         }
+        .onChange(of: flashlight.isStrobing) { _, isStrobing in
+            if !isStrobing {
+                isStrobeActive = false
+                strobeIntensity = 0
+            }
+        }
     }
     
     private func startTimer() {
@@ -125,12 +134,28 @@ struct FlashlightView: View {
         flashlight.isOn && abs(flashlight.brightness - value) <= 0.02
     }
 
+    private func exitStrobeIfNeeded() {
+        if isStrobeActive {
+            flashlight.stopStrobe()
+            isStrobeActive = false
+            strobeIntensity = 0
+        }
+    }
+
     private func distanceOutsideRect(point: CGPoint, rect: CGRect) -> CGFloat {
         let deadZone: CGFloat = 8
         let expanded = rect.insetBy(dx: -deadZone, dy: -deadZone)
         let dx = max(expanded.minX - point.x, 0, point.x - expanded.maxX)
         let dy = max(expanded.minY - point.y, 0, point.y - expanded.maxY)
         return sqrt(dx * dx + dy * dy)
+    }
+
+    private func playStrobeHaptic() {
+        HapticFeedback.impact(.light)
+        Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 70_000_000)
+            HapticFeedback.impact(.light)
+        }
     }
 
     // MARK: - Background
@@ -197,7 +222,7 @@ struct FlashlightView: View {
                     ForEach(0..<3, id: \.self) { i in
                         Circle()
                             .stroke(
-                                Color.white.opacity(0.05 * flashlight.brightness),
+                                (isStrobeActive ? Color.red : Color.white).opacity(0.05 * flashlight.brightness),
                                 lineWidth: 1
                             )
                             .frame(
@@ -271,9 +296,11 @@ struct FlashlightView: View {
                                         .animation(.linear(duration: 0.05), value: strobeIntensity)
                                 )
                         }
-                        .offset(y: -120)
+                        .offset(y: -150)
                     }
                 }
+                .frame(width: strobeControlSize, height: strobeControlSize)
+                .contentShape(Rectangle())
                 .coordinateSpace(name: "strobeButton")
                 .onPreferenceChange(PowerButtonFrameKey.self) { frame in
                     powerButtonFrame = frame
@@ -282,37 +309,42 @@ struct FlashlightView: View {
                     DragGesture(minimumDistance: 10)
                         .onChanged { value in
                             guard powerButtonFrame != .zero else { return }
+                            let startInside = distanceOutsideRect(point: value.startLocation, rect: powerButtonFrame) == 0
+                            if isStrobeActive {
+                                strobeDragStartedOutside = !startInside
+                            } else if !startInside {
+                                return
+                            }
+
                             let location = value.location
                             let outsideDistance = distanceOutsideRect(point: location, rect: powerButtonFrame)
                             if outsideDistance > 0 {
                                 let normalized = min(1.0, max(0.0, outsideDistance / 120.0))
-                                if !didActivateStrobeDrag && normalized > 0.05 {
+                                if normalized > 0.05 {
+                                    if !isStrobeActive {
+                                        isStrobeActive = true
+                                        flashlight.startStrobe(intensity: normalized)
+                                        playStrobeHaptic()
+                                    } else {
+                                        flashlight.updateStrobeIntensity(normalized)
+                                    }
                                     didActivateStrobeDrag = true
-                                    isStrobeActive = true
-                                    flashlight.startStrobe(intensity: normalized)
-                                } else if didActivateStrobeDrag {
-                                    flashlight.updateStrobeIntensity(normalized)
-                                }
-                                if didActivateStrobeDrag {
                                     strobeIntensity = normalized
                                 }
-                            } else if isStrobeActive {
+                            } else if isStrobeActive && !strobeDragStartedOutside {
                                 flashlight.stopStrobe()
                                 isStrobeActive = false
+                                didActivateStrobeDrag = false
                                 strobeIntensity = 0
                             }
                         }
                         .onEnded { _ in
                             didActivateStrobeDrag = false
+                            strobeDragStartedOutside = false
                         }
                 )
             }
 
-            // Status text
-            Text(flashlight.isOn ? "ON" : "OFF")
-                .font(.system(size: 14, weight: .bold, design: .monospaced))
-                .tracking(6)
-                .foregroundStyle(flashlight.isOn ? .white : .white.opacity(0.3))
         }
     }
 
@@ -402,6 +434,7 @@ struct FlashlightView: View {
                         icon: "sun.min.fill",
                         isSelected: isPresetSelected(0.25)
                     ) {
+                        exitStrobeIfNeeded()
                         withAnimation {
                             flashlight.brightness = 0.25
                             flashlight.turnOn()
@@ -413,6 +446,7 @@ struct FlashlightView: View {
                         icon: "sun.max.fill",
                         isSelected: isPresetSelected(0.5)
                     ) {
+                        exitStrobeIfNeeded()
                         withAnimation {
                             flashlight.brightness = 0.5
                             flashlight.turnOn()
@@ -424,6 +458,7 @@ struct FlashlightView: View {
                         icon: "light.max",
                         isSelected: isPresetSelected(1.0)
                     ) {
+                        exitStrobeIfNeeded()
                         withAnimation {
                             flashlight.brightness = 1.0
                             flashlight.turnOn()
