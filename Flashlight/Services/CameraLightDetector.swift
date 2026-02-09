@@ -65,8 +65,28 @@ class CameraLightDetector: NSObject, ObservableObject {
     /// Region of interest for light detection (center portion of frame)
     var roiSize: CGFloat = 0.25
     
+    /// ROI center position (normalized 0-1), default is center
+    @Published var roiCenterX: CGFloat = 0.5
+    @Published var roiCenterY: CGFloat = 0.5
+    
     /// Callback for brightness updates with high-precision timestamp
     var onBrightnessUpdate: ((Double, CFAbsoluteTime) -> Void)?
+    
+    // MARK: - Recording for Replay
+    @Published var isRecording = false
+    @Published var hasRecording = false
+    @Published var isReplaying = false
+    private var recordedFrames: [RecordedFrame] = []
+    private var replayIndex = 0
+    private var replayTimer: Timer?
+    private let maxRecordingFrames = 1800  // 30 seconds at 60fps
+    
+    struct RecordedFrame {
+        let imageData: Data  // JPEG compressed for memory efficiency
+        let timestamp: CFAbsoluteTime
+        let width: Int
+        let height: Int
+    }
 
     override init() {
         super.init()
@@ -226,6 +246,232 @@ class CameraLightDetector: NSObject, ObservableObject {
             }
         }
     }
+    
+    // MARK: - Recording
+    
+    func startRecording() {
+        recordedFrames.removeAll()
+        isRecording = true
+        hasRecording = false
+    }
+    
+    func stopRecording() {
+        isRecording = false
+        hasRecording = !recordedFrames.isEmpty
+    }
+    
+    func clearRecording() {
+        recordedFrames.removeAll()
+        hasRecording = false
+        isReplaying = false
+        replayTimer?.invalidate()
+        replayTimer = nil
+    }
+    
+    // MARK: - Replay
+    
+    func startReplay(onFrame: @escaping (CGImage, CFAbsoluteTime) -> Void) {
+        guard hasRecording, !recordedFrames.isEmpty else { return }
+        
+        isReplaying = true
+        replayIndex = 0
+        
+        // Calculate frame interval from recording
+        let frameInterval: TimeInterval
+        if recordedFrames.count > 1 {
+            let totalTime = recordedFrames.last!.timestamp - recordedFrames.first!.timestamp
+            frameInterval = totalTime / Double(recordedFrames.count - 1)
+        } else {
+            frameInterval = 1.0 / 60.0
+        }
+        
+        replayTimer = Timer.scheduledTimer(withTimeInterval: frameInterval, repeats: true) { [weak self] _ in
+            guard let self = self, self.isReplaying else {
+                self?.replayTimer?.invalidate()
+                return
+            }
+            
+            if self.replayIndex < self.recordedFrames.count {
+                let frame = self.recordedFrames[self.replayIndex]
+                if let image = self.decompressFrame(frame) {
+                    onFrame(image, frame.timestamp)
+                }
+                self.replayIndex += 1
+            } else {
+                // Loop replay
+                self.replayIndex = 0
+            }
+        }
+    }
+    
+    func stopReplay() {
+        isReplaying = false
+        replayTimer?.invalidate()
+        replayTimer = nil
+    }
+    
+    /// Restart replay from the beginning
+    func restartReplay(onFrame: @escaping (CGImage, CFAbsoluteTime) -> Void) {
+        stopReplay()
+        startReplay(onFrame: onFrame)
+    }
+    
+    /// Reprocess all recorded frames with current ROI position
+    func reprocessRecording(roiCenterX: CGFloat, roiCenterY: CGFloat) -> [(brightness: Double, timestamp: CFAbsoluteTime)] {
+        self.roiCenterX = roiCenterX
+        self.roiCenterY = roiCenterY
+        
+        var results: [(brightness: Double, timestamp: CFAbsoluteTime)] = []
+        
+        // Reset calibration for reprocessing
+        var reprocessBaselineSamples: [Double] = []
+        var reprocessBaselineLevel: Double = 0
+        var reprocessSignalHistory: [Double] = []
+        
+        for (index, frame) in recordedFrames.enumerated() {
+            guard let cgImage = decompressFrame(frame) else { continue }
+            
+            let analysis = analyzeImageForLightSource(cgImage, width: frame.width, height: frame.height, timestamp: frame.timestamp)
+            let score = analysis.lightSourceScore
+            
+            // Calibration phase
+            if index < calibrationFramesNeeded {
+                reprocessBaselineSamples.append(score)
+                if index == calibrationFramesNeeded - 1 {
+                    let sorted = reprocessBaselineSamples.sorted()
+                    reprocessBaselineLevel = sorted[sorted.count / 2]
+                }
+                continue
+            }
+            
+            // Smoothing
+            let smoothedScore: Double
+            if reprocessSignalHistory.isEmpty {
+                smoothedScore = score
+            } else {
+                let lastValue = reprocessSignalHistory.last ?? score
+                let alpha = score > lastValue ? 0.85 : 0.6
+                smoothedScore = lastValue * (1 - alpha) + score * alpha
+            }
+            
+            reprocessSignalHistory.append(smoothedScore)
+            if reprocessSignalHistory.count > signalHistorySize {
+                reprocessSignalHistory.removeFirst()
+            }
+            
+            // Normalize
+            let normalizedSignal: Double
+            if reprocessBaselineLevel > 0.01 {
+                normalizedSignal = max(0, (smoothedScore - reprocessBaselineLevel * 0.8) / (1.0 - reprocessBaselineLevel * 0.8))
+            } else {
+                normalizedSignal = smoothedScore
+            }
+            
+            results.append((normalizedSignal, frame.timestamp))
+        }
+        
+        return results
+    }
+    
+    private func compressFrame(_ pixelBuffer: CVPixelBuffer, timestamp: CFAbsoluteTime) -> RecordedFrame? {
+        var ciImage = CIImage(cvPixelBuffer: pixelBuffer)
+        let context = CIContext()
+        
+        // Camera captures in landscape, rotate to portrait (90 degrees clockwise)
+        // The orientation transform rotates the image to match the screen orientation
+        ciImage = ciImage.oriented(.right)
+        
+        let width = Int(ciImage.extent.width)
+        let height = Int(ciImage.extent.height)
+        
+        // Scale down for memory efficiency
+        let scale: CGFloat = 0.3
+        let scaledWidth = Int(CGFloat(width) * scale)
+        let scaledHeight = Int(CGFloat(height) * scale)
+        
+        guard let cgImage = context.createCGImage(ciImage, from: ciImage.extent) else { return nil }
+        
+        // Create UIImage with correct orientation and scale it down
+        let uiImage = UIImage(cgImage: cgImage)
+        
+        // Resize the image
+        let targetSize = CGSize(width: scaledWidth, height: scaledHeight)
+        UIGraphicsBeginImageContextWithOptions(targetSize, false, 1.0)
+        uiImage.draw(in: CGRect(origin: .zero, size: targetSize))
+        let resizedImage = UIGraphicsGetImageFromCurrentImageContext()
+        UIGraphicsEndImageContext()
+        
+        guard let finalImage = resizedImage,
+              let jpegData = finalImage.jpegData(compressionQuality: 0.5) else { return nil }
+        
+        return RecordedFrame(imageData: jpegData, timestamp: timestamp, width: scaledWidth, height: scaledHeight)
+    }
+    
+    private func decompressFrame(_ frame: RecordedFrame) -> CGImage? {
+        guard let uiImage = UIImage(data: frame.imageData) else { return nil }
+        return uiImage.cgImage
+    }
+    
+    /// Analyze a CGImage for light source (used in replay/reprocess)
+    private func analyzeImageForLightSource(_ cgImage: CGImage, width: Int, height: Int, timestamp: CFAbsoluteTime) -> LightAnalysis {
+        guard let dataProvider = cgImage.dataProvider,
+              let data = dataProvider.data,
+              let buffer = CFDataGetBytePtr(data) else {
+            return LightAnalysis(peakBrightness: 0, centerBrightness: 0, edgeBrightness: 0, signalToNoise: 0, timestamp: timestamp)
+        }
+        
+        let bytesPerRow = cgImage.bytesPerRow
+        let bitsPerPixel = cgImage.bitsPerPixel
+        let bytesPerPixel = bitsPerPixel / 8
+        
+        // Use actual CGImage dimensions for analysis (they match the stored frame dimensions)
+        let actualWidth = cgImage.width
+        let actualHeight = cgImage.height
+        
+        // Calculate ROI based on current position
+        let roiSide = Int(Double(min(actualWidth, actualHeight)) * Double(roiSize))
+        let centerX = Int(CGFloat(actualWidth) * roiCenterX)
+        let centerY = Int(CGFloat(actualHeight) * roiCenterY)
+        
+        let innerSize = roiSide * 2 / 5
+        let innerStartX = max(0, centerX - innerSize / 2)
+        let innerStartY = max(0, centerY - innerSize / 2)
+        
+        var centerTotal: Double = 0
+        var centerCount: Double = 0
+        var centerPeak: Double = 0
+        
+        for y in stride(from: innerStartY, to: min(innerStartY + innerSize, actualHeight), by: 1) {
+            for x in stride(from: innerStartX, to: min(innerStartX + innerSize, actualWidth), by: 1) {
+                let offset = y * bytesPerRow + x * bytesPerPixel
+                
+                let r: Double, g: Double, b: Double
+                if bytesPerPixel >= 3 {
+                    r = Double(buffer[offset])
+                    g = Double(buffer[offset + 1])
+                    b = Double(buffer[offset + 2])
+                } else {
+                    let gray = Double(buffer[offset])
+                    r = gray; g = gray; b = gray
+                }
+                
+                let luminance = (r * 0.299 + g * 0.587 + b * 0.114) / 255.0
+                centerTotal += luminance
+                centerPeak = max(centerPeak, luminance)
+                centerCount += 1
+            }
+        }
+        
+        let centerBrightness = centerCount > 0 ? centerTotal / centerCount : 0
+        
+        return LightAnalysis(
+            peakBrightness: centerPeak,
+            centerBrightness: centerBrightness,
+            edgeBrightness: 0,
+            signalToNoise: centerBrightness * 10,
+            timestamp: timestamp
+        )
+    }
 
     /// Analyze the center region for light source with optimized algorithm
     private func analyzeForLightSource(from sampleBuffer: CMSampleBuffer) -> LightAnalysis {
@@ -354,6 +600,14 @@ extension CameraLightDetector: AVCaptureVideoDataOutputSampleBufferDelegate {
     ) {
         let analysis = analyzeForLightSource(from: sampleBuffer)
         let score = analysis.lightSourceScore
+        
+        // Record frame if recording is enabled
+        if isRecording, recordedFrames.count < maxRecordingFrames {
+            if let pixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer),
+               let frame = compressFrame(pixelBuffer, timestamp: analysis.timestamp) {
+                recordedFrames.append(frame)
+            }
+        }
         
         // Calibration phase: collect baseline samples
         if isCalibrating {

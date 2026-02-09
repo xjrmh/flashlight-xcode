@@ -8,6 +8,12 @@ struct MorseReceiveView: View {
     @State private var showHistory = false
     @State private var showSettings = false
     @State private var showPermissionAlert = false
+    
+    // Replay mode state
+    @State private var isInReplayMode = false
+    @State private var replayImage: CGImage?
+    @State private var roiPosition: CGPoint = CGPoint(x: 0.5, y: 0.5)  // Normalized 0-1
+    @State private var isDraggingROI = false
 
     private let roiOverlaySize: CGFloat = 80
 
@@ -156,54 +162,123 @@ struct MorseReceiveView: View {
 
     private var cameraPreviewSection: some View {
         ZStack {
-            // Camera feed
-            CameraPreviewView(detector: cameraDetector)
+            // Show replay image or live camera feed
+            if isInReplayMode, let cgImage = replayImage {
+                GeometryReader { geo in
+                    Image(decorative: cgImage, scale: 1.0)
+                        .resizable()
+                        .aspectRatio(contentMode: .fill)
+                        .frame(width: geo.size.width, height: geo.size.height)
+                        .clipped()
+                }
                 .frame(height: 240)
                 .clipShape(RoundedRectangle(cornerRadius: 20))
                 .overlay(
                     RoundedRectangle(cornerRadius: 20)
-                        .strokeBorder(Color.white.opacity(0.2), lineWidth: 0.5)
+                        .strokeBorder(Color.orange.opacity(0.5), lineWidth: 2)
                 )
-
-            // Dimming overlay with cutout for center detection area (when active)
-            if morseEngine.isReceiving {
-                Canvas { context, size in
-                    // Fill entire area with semi-transparent black
-                    let fullRect = CGRect(origin: .zero, size: size)
-                    context.fill(Path(roundedRect: fullRect, cornerRadius: 20), with: .color(.black.opacity(0.6)))
-                    
-                    // Cut out the center square
-                    let centerSize: CGFloat = 80
-                    let centerRect = CGRect(
-                        x: (size.width - centerSize) / 2,
-                        y: (size.height - centerSize) / 2,
-                        width: centerSize,
-                        height: centerSize
+            } else {
+                // Camera feed
+                CameraPreviewView(detector: cameraDetector)
+                    .frame(height: 240)
+                    .clipShape(RoundedRectangle(cornerRadius: 20))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 20)
+                            .strokeBorder(Color.white.opacity(0.2), lineWidth: 0.5)
                     )
-                    context.blendMode = .destinationOut
-                    context.fill(Path(roundedRect: centerRect, cornerRadius: 8), with: .color(.white))
+            }
+
+            // Dimming overlay with cutout for detection area
+            if morseEngine.isReceiving || isInReplayMode {
+                GeometryReader { geo in
+                    Canvas { context, size in
+                        // Fill entire area with semi-transparent black
+                        let fullRect = CGRect(origin: .zero, size: size)
+                        context.fill(Path(roundedRect: fullRect, cornerRadius: 20), with: .color(.black.opacity(0.6)))
+                        
+                        // Cut out the ROI square at current position
+                        let centerSize: CGFloat = 80
+                        let centerX = isInReplayMode ? roiPosition.x * size.width : size.width / 2
+                        let centerY = isInReplayMode ? roiPosition.y * size.height : size.height / 2
+                        let centerRect = CGRect(
+                            x: centerX - centerSize / 2,
+                            y: centerY - centerSize / 2,
+                            width: centerSize,
+                            height: centerSize
+                        )
+                        context.blendMode = .destinationOut
+                        context.fill(Path(roundedRect: centerRect, cornerRadius: 8), with: .color(.white))
+                    }
                 }
                 .allowsHitTesting(false)
             }
 
-            // ROI overlay border
-            VStack {
-                Spacer()
-                HStack {
-                    Spacer()
+            // Draggable ROI overlay for replay mode
+            if isInReplayMode {
+                GeometryReader { geo in
+                    let roiX = roiPosition.x * geo.size.width
+                    let roiY = roiPosition.y * geo.size.height
+                    
                     RoundedRectangle(cornerRadius: 8)
                         .strokeBorder(
-                            morseEngine.lightDetected ? Color.green : Color.white.opacity(0.4),
-                            style: StrokeStyle(lineWidth: 2, dash: morseEngine.isReceiving ? [] : [8, 4])
+                            isDraggingROI ? Color.orange : Color.cyan,
+                            style: StrokeStyle(lineWidth: 3)
                         )
                         .frame(width: roiOverlaySize, height: roiOverlaySize)
                         .background(
                             RoundedRectangle(cornerRadius: 8)
-                                .fill(morseEngine.lightDetected ? Color.green.opacity(0.15) : Color.clear)
+                                .fill(Color.cyan.opacity(0.1))
                         )
+                        .position(x: roiX, y: roiY)
+                        .gesture(
+                            DragGesture()
+                                .onChanged { value in
+                                    isDraggingROI = true
+                                    // Update position (clamped to bounds)
+                                    let newX = max(0.1, min(0.9, value.location.x / geo.size.width))
+                                    let newY = max(0.1, min(0.9, value.location.y / geo.size.height))
+                                    roiPosition = CGPoint(x: newX, y: newY)
+                                }
+                                .onEnded { _ in
+                                    isDraggingROI = false
+                                    // Reprocess with new ROI position
+                                    reprocessWithNewROI()
+                                }
+                        )
+                    
+                    // Instruction text
+                    VStack {
+                        Text("Drag to reposition detection area")
+                            .font(.system(size: 11, weight: .medium))
+                            .foregroundStyle(.white.opacity(0.8))
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 5)
+                            .background(Capsule().fill(.black.opacity(0.6)))
+                        Spacer()
+                    }
+                    .frame(maxWidth: .infinity)
+                    .padding(.top, 8)
+                }
+            } else {
+                // Fixed ROI overlay border (non-replay mode)
+                VStack {
+                    Spacer()
+                    HStack {
+                        Spacer()
+                        RoundedRectangle(cornerRadius: 8)
+                            .strokeBorder(
+                                morseEngine.lightDetected ? Color.green : Color.white.opacity(0.4),
+                                style: StrokeStyle(lineWidth: 2, dash: morseEngine.isReceiving ? [] : [8, 4])
+                            )
+                            .frame(width: roiOverlaySize, height: roiOverlaySize)
+                            .background(
+                                RoundedRectangle(cornerRadius: 8)
+                                    .fill(morseEngine.lightDetected ? Color.green.opacity(0.15) : Color.clear)
+                            )
+                        Spacer()
+                    }
                     Spacer()
                 }
-                Spacer()
             }
 
             GeometryReader { proxy in
@@ -218,7 +293,7 @@ struct MorseReceiveView: View {
             .allowsHitTesting(false)
 
             // Status overlay only when camera permission denied
-            if cameraDetector.permissionStatus == .denied {
+            if cameraDetector.permissionStatus == .denied && !isInReplayMode {
                 ZStack {
                     RoundedRectangle(cornerRadius: 20)
                         .fill(.black.opacity(0.7))
@@ -244,7 +319,7 @@ struct MorseReceiveView: View {
             }
             
             // "Ready" indicator when camera is on but not detecting
-            if cameraDetector.isRunning && !morseEngine.isReceiving && cameraDetector.permissionStatus == .authorized {
+            if cameraDetector.isRunning && !morseEngine.isReceiving && !isInReplayMode && cameraDetector.permissionStatus == .authorized {
                 VStack {
                     Spacer()
                     Text("Position camera at light source")
@@ -254,6 +329,24 @@ struct MorseReceiveView: View {
                         .padding(.vertical, 6)
                         .background(Capsule().fill(.black.opacity(0.5)))
                         .padding(.bottom, 12)
+                }
+            }
+            
+            // Replay mode indicator
+            if isInReplayMode {
+                VStack {
+                    Spacer()
+                    HStack {
+                        Image(systemName: "play.circle.fill")
+                            .foregroundStyle(.orange)
+                        Text("REPLAY MODE")
+                            .font(.system(size: 11, weight: .bold))
+                            .foregroundStyle(.orange)
+                    }
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 6)
+                    .background(Capsule().fill(.black.opacity(0.7)))
+                    .padding(.bottom, 8)
                 }
             }
         }
@@ -523,10 +616,11 @@ struct MorseReceiveView: View {
         LiquidGlassCard(cornerRadius: 20, padding: 16) {
             VStack(spacing: 16) {
                 // Source mode toggle (always visible)
+                // Toggle ON = All Light Sources, Toggle OFF = Dedicated Source
                 HStack {
                     Image(systemName: morseEngine.dedicatedSourceMode ? "antenna.radiowaves.left.and.right" : "light.max")
                         .font(.system(size: 16))
-                        .foregroundStyle(morseEngine.dedicatedSourceMode ? .cyan : .white.opacity(0.6))
+                        .foregroundStyle(morseEngine.dedicatedSourceMode ? .white.opacity(0.6) : .cyan)
                         .frame(width: 24)
                     
                     VStack(alignment: .leading, spacing: 2) {
@@ -541,7 +635,10 @@ struct MorseReceiveView: View {
                     
                     Spacer()
                     
-                    Toggle("", isOn: $morseEngine.dedicatedSourceMode)
+                    Toggle("", isOn: Binding(
+                        get: { !morseEngine.dedicatedSourceMode },
+                        set: { morseEngine.dedicatedSourceMode = !$0 }
+                    ))
                         .labelsHidden()
                         .tint(.cyan)
                 }
@@ -651,25 +748,52 @@ struct MorseReceiveView: View {
 
     private var controlsSection: some View {
         HStack(spacing: 12) {
-            // Start / Stop / Processing
-            Button {
-                if morseEngine.isReceiving && !morseEngine.isProcessing {
-                    cameraDetector.stop()
-                    morseEngine.stopReceiving()
-                } else if !morseEngine.isReceiving && !morseEngine.isProcessing {
-                    cameraDetector.start()
-                    morseEngine.startReceiving()
-                }
-            } label: {
-                HStack(spacing: 10) {
-                    if morseEngine.isProcessing {
-                        ProgressView()
-                            .progressViewStyle(CircularProgressViewStyle(tint: .white))
-                            .scaleEffect(0.8)
-                    } else {
-                        Image(systemName: morseEngine.isReceiving ? "stop.fill" : "camera.fill")
+            // Replay mode: Exit replay button
+            if isInReplayMode {
+                Button {
+                    exitReplayMode()
+                } label: {
+                    HStack(spacing: 10) {
+                        Image(systemName: "xmark")
                             .font(.system(size: 18, weight: .semibold))
+                        Text("Exit Replay")
+                            .font(.system(size: 16, weight: .bold))
                     }
+                    .foregroundStyle(.white)
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 16)
+                    .background(
+                        Capsule()
+                            .fill(.gray.opacity(0.6))
+                    )
+                }
+                .buttonStyle(HapticButtonStyle())
+            } else {
+                // Start / Stop / Processing
+                Button {
+                    if morseEngine.isReceiving && !morseEngine.isProcessing {
+                        // Stop and enter replay mode
+                        cameraDetector.stopRecording()
+                        morseEngine.stopReceiving()
+                        if cameraDetector.hasRecording {
+                            enterReplayMode()
+                        }
+                    } else if !morseEngine.isReceiving && !morseEngine.isProcessing {
+                        // Start recording
+                        cameraDetector.start()
+                        cameraDetector.startRecording()
+                        morseEngine.startReceiving()
+                    }
+                } label: {
+                    HStack(spacing: 10) {
+                        if morseEngine.isProcessing {
+                            ProgressView()
+                                .progressViewStyle(CircularProgressViewStyle(tint: .white))
+                                .scaleEffect(0.8)
+                        } else {
+                            Image(systemName: morseEngine.isReceiving ? "stop.fill" : "camera.fill")
+                                .font(.system(size: 18, weight: .semibold))
+                        }
 
                     Text(buttonTitle)
                         .font(.system(size: 16, weight: .bold))
@@ -681,12 +805,13 @@ struct MorseReceiveView: View {
                     Capsule()
                         .fill(buttonBackgroundColor)
                 )
+                }
+                .buttonStyle(HapticButtonStyle())
+                .disabled(morseEngine.isProcessing)
             }
-            .buttonStyle(HapticButtonStyle())
-            .disabled(morseEngine.isProcessing)
 
-            // Clear
-            if !morseEngine.detectedMorse.isEmpty {
+            // Clear button - only show when there's detected morse and not in replay mode
+            if !morseEngine.detectedMorse.isEmpty && !isInReplayMode {
                 Button {
                     morseEngine.clearReceived()
                 } label: {
@@ -706,6 +831,48 @@ struct MorseReceiveView: View {
                 .buttonStyle(HapticButtonStyle())
             }
         }
+    }
+    
+    // MARK: - Replay Mode
+    
+    private func enterReplayMode() {
+        isInReplayMode = true
+        roiPosition = CGPoint(x: 0.5, y: 0.5)
+        
+        // Start replay with first frame
+        cameraDetector.startReplay { [self] image, timestamp in
+            DispatchQueue.main.async {
+                self.replayImage = image
+            }
+        }
+    }
+    
+    private func exitReplayMode() {
+        isInReplayMode = false
+        replayImage = nil
+        cameraDetector.stopReplay()
+        cameraDetector.clearRecording()
+        
+        // Restart camera preview
+        cameraDetector.start()
+    }
+    
+    private func reprocessWithNewROI() {
+        // Restart replay from beginning
+        cameraDetector.restartReplay { [self] image, timestamp in
+            DispatchQueue.main.async {
+                self.replayImage = image
+            }
+        }
+        
+        // Reprocess all recorded frames with new ROI position
+        let results = cameraDetector.reprocessRecording(
+            roiCenterX: roiPosition.x,
+            roiCenterY: roiPosition.y
+        )
+        
+        // Feed reprocessed data to morse engine
+        morseEngine.reprocessFromRecording(brightnessData: results)
     }
 
 }

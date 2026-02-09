@@ -867,6 +867,50 @@ class MorseCodeEngine: ObservableObject {
         }
     }
     
+    // MARK: - Reprocess from Recording
+    
+    /// Reprocess detection from recorded brightness data (used when ROI is moved in replay mode)
+    func reprocessFromRecording(brightnessData: [(brightness: Double, timestamp: CFAbsoluteTime)]) {
+        guard brightnessData.count >= 2 else { return }
+        
+        isProcessing = true
+        
+        // Reset state for reprocessing
+        signalSequence.removeAll()
+        pulseDurations.removeAll()
+        gapDurations.removeAll()
+        receivedSignals.removeAll()
+        detectedMorse = ""
+        decodedText = ""
+        
+        // Reprocess all brightness data through the state machine
+        detectorState = .waitingForSignal
+        consecutiveHighSamples = 0
+        consecutiveLowSamples = 0
+        
+        // Reset threshold tracking
+        noiseFloor = 0.05
+        signalPeak = 0.5
+        thresholdHistory.removeAll()
+        
+        // Temporarily enable receiving so updateLightLevel processes the data
+        let wasReceiving = isReceiving
+        isReceiving = true
+        
+        for (brightness, timestamp) in brightnessData {
+            updateLightLevel(brightness, timestamp: timestamp)
+        }
+        
+        // Restore receiving state
+        isReceiving = wasReceiving
+        
+        // Run final verification
+        performFinalVerification()
+        
+        isProcessing = false
+        detectorState = .idle
+    }
+    
     // MARK: - Post-Processing Verification
     
     /// Performs comprehensive verification of all detections using complete signal data
